@@ -11,7 +11,7 @@ from fairseq import utils
 from . import FairseqCriterion, register_criterion
 import torch.distributions as d
 
-def smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None, reduce=True):
+def smoothed_nll_loss(lprobs, target, beta, ignore_index=None, reduce=True):
     if target.dim() == lprobs.dim() - 1:
         target = target.unsqueeze(-1)
     nll_loss = -lprobs.gather(dim=-1, index=target)
@@ -27,7 +27,7 @@ def smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None, reduce=True):
     if reduce:
         nll_loss = nll_loss.sum()
         ent = ent.sum()
-    loss = nll_loss - epsilon * ent
+    loss = nll_loss - beta * ent
     return loss, nll_loss
 
 
@@ -36,14 +36,14 @@ class ConfidencePenaltyCrossEntropyCriterion(FairseqCriterion):
 
     def __init__(self, args, task):
         super().__init__(args, task)
-        self.eps = args.label_smoothing
+        self.eps = args.beta
 
     @staticmethod
     def add_args(parser):
         """Add criterion-specific arguments to the parser."""
         # fmt: off
-        parser.add_argument('--label-smoothing', default=0., type=float, metavar='D',
-                            help='epsilon for label smoothing, 0 means no label smoothing')
+        parser.add_argument('--beta', default=0., type=float, metavar='D',
+                            help='weight of penalty')
         # fmt: on
 
     def forward(self, model, sample, reduce=True):

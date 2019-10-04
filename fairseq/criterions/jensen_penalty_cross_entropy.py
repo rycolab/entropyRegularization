@@ -6,7 +6,7 @@ from fairseq import utils
 from . import FairseqCriterion, register_criterion
 import torch.distributions as d
 
-def smoothed_nll_loss(lprobs, target, beta, ignore_index=None, reduce=True):
+def smoothed_nll_loss(lprobs, target, alpha, beta, ignore_index=None, reduce=True):
     if target.dim() == lprobs.dim() - 1:
         target = target.unsqueeze(-1)
     nll_loss = -lprobs.gather(dim=-1, index=target)
@@ -16,9 +16,9 @@ def smoothed_nll_loss(lprobs, target, beta, ignore_index=None, reduce=True):
     #ent_u = -torch.log(uni_probs).mul(uni_probs).sum(dim=-1, keepdim=True)
     #assert ent_u.sum() >= ent_p.sum()
 
-    comb = (torch.exp(lprobs) + uni_probs)/2
+    comb = torch.exp(lprobs) * self.alpha + uni_probs * (1. - self.alpha)
     ent_c = -torch.log(comb).mul(comb).sum(dim=-1, keepdim=True)
-    ent = ent_c - ent_p/2
+    ent = ent_c - self.alpha * ent_p # not including (1 - alpha) * ent_u since it's constant
 
     if ignore_index is not None:
         non_pad_mask = target.ne(ignore_index)
@@ -34,12 +34,13 @@ def smoothed_nll_loss(lprobs, target, beta, ignore_index=None, reduce=True):
     return loss, nll_loss
 
 
-@register_criterion('js_cross_entropy')
-class JSCrossEntropyCriterion(FairseqCriterion):
+@register_criterion('jensen_cross_entropy')
+class JensonCrossEntropyCriterion(FairseqCriterion):
 
     def __init__(self, args, task):
         super().__init__(args, task)
-        self.eps = args.beta
+        self.alpha = args.alpha
+        self.beta = args.beta
 
     @staticmethod
     def add_args(parser):
@@ -47,6 +48,8 @@ class JSCrossEntropyCriterion(FairseqCriterion):
         # fmt: off
         parser.add_argument('--beta', default=0., type=float, metavar='D',
                             help='weight of penalty')
+        parser.add_argument('--alpha', default=0.5, type=float, metavar='D',
+                            help='alpha parameter for divergence')
         # fmt: on
 
     def forward(self, model, sample, reduce=True):
@@ -74,7 +77,7 @@ class JSCrossEntropyCriterion(FairseqCriterion):
         lprobs = lprobs.view(-1, lprobs.size(-1))
         target = model.get_targets(sample, net_output).view(-1, 1)
         loss, nll_loss = smoothed_nll_loss(
-            lprobs, target, self.eps, ignore_index=self.padding_idx, reduce=reduce,
+            lprobs, target, self.alpha, self.beta, ignore_index=self.padding_idx, reduce=reduce,
         )
         return loss, nll_loss
 
