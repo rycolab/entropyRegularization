@@ -8,6 +8,7 @@ RoBERTa iterates on BERT's pretraining procedure, including training the model l
 
 ### What's New:
 
+- September 2019: TensorFlow and TPU support via the [transformers library](https://github.com/huggingface/transformers).
 - August 2019: RoBERTa is now supported in the [pytorch-transformers library](https://github.com/huggingface/pytorch-transformers).
 - August 2019: Added [tutorial for finetuning on WinoGrande](https://github.com/pytorch/fairseq/tree/master/examples/roberta/wsc#roberta-training-on-winogrande-dataset).
 - August 2019: Added [tutorial for pretraining RoBERTa using your own data](README.pretraining.md).
@@ -146,11 +147,26 @@ logprobs = roberta.predict('new_task', tokens)  # tensor([[-1.1050, -1.0672, -1.
 
 ##### Batched prediction:
 ```python
+import torch
 from fairseq.data.data_utils import collate_tokens
-sentences = ['Hello world.', 'Another unrelated sentence.']
-batch = collate_tokens([roberta.encode(sent) for sent in sentences], pad_idx=1)
-logprobs = roberta.predict('new_task', batch)
-assert logprobs.size() == torch.Size([2, 3])
+
+roberta = torch.hub.load('pytorch/fairseq', 'roberta.large.mnli')
+roberta.eval()
+
+batch_of_pairs = [
+    ['Roberta is a heavily optimized version of BERT.', 'Roberta is not very optimized.'],
+    ['Roberta is a heavily optimized version of BERT.', 'Roberta is based on BERT.'],
+    ['potatoes are awesome.', 'I like to run.'],
+    ['Mars is very far from earth.', 'Mars is very close.'],
+]
+
+batch = collate_tokens(
+    [roberta.encode(pair[0], pair[1]) for pair in batch_of_pairs], pad_idx=1
+)
+
+logprobs = roberta.predict('mnli', batch)
+print(logprobs.argmax(dim=1))
+# tensor([0, 2, 1, 0])
 ```
 
 ##### Using the GPU:
@@ -167,13 +183,13 @@ RoBERTa can be used to fill `<mask>` tokens in the input. Some examples from the
 [Natural Questions dataset](https://ai.google.com/research/NaturalQuestions/):
 ```python
 roberta.fill_mask('The first Star wars movie came out in <mask>', topk=3)
-# [('The first Star wars movie came out in 1977', 0.9504712224006653), ('The first Star wars movie came out in 1978', 0.009986752644181252), ('The first Star wars movie came out in 1979', 0.00957468245178461)]
+# [('The first Star wars movie came out in 1977', 0.9504708051681519, ' 1977'), ('The first Star wars movie came out in 1978', 0.009986862540245056, ' 1978'), ('The first Star wars movie came out in 1979', 0.009574787691235542, ' 1979')]
 
 roberta.fill_mask('Vikram samvat calender is official in <mask>', topk=3)
-# [('Vikram samvat calender is official in India', 0.21878768503665924), ('Vikram samvat calender is official in Delhi', 0.08547217398881912), ('Vikram samvat calender is official in Gujarat', 0.07556255906820297)]
+# [('Vikram samvat calender is official in India', 0.21878819167613983, ' India'), ('Vikram samvat calender is official in Delhi', 0.08547237515449524, ' Delhi'), ('Vikram samvat calender is official in Gujarat', 0.07556215673685074, ' Gujarat')]
 
 roberta.fill_mask('<mask> is the common currency of the European Union', topk=3)
-# [('Euro is the common currency of the European Union', 0.945650577545166), ('euro is the common currency of the European Union', 0.025747718289494514), ('€ is the common currency of the European Union', 0.011183015070855618)]
+# [('Euro is the common currency of the European Union', 0.9456493854522705, 'Euro'), ('euro is the common currency of the European Union', 0.025748178362846375, 'euro'), ('€ is the common currency of the European Union', 0.011183084920048714, '€')]
 ```
 
 #### Pronoun disambiguation (Winograd Schema Challenge):

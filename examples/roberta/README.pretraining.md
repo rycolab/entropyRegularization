@@ -4,7 +4,7 @@ This tutorial will walk you through pretraining RoBERTa over your own data.
 
 ### 1) Preprocess the data
 
-Data should be preprocessed following the [language modeling format](/examples/language_model).
+Data should be preprocessed following the [language modeling format](/examples/language_model), i.e. each document should be separated by an empty line (only useful with `--sample-break-mode complete_doc`). Lines will be concatenated as a 1D text stream during training.
 
 We'll use the [WikiText-103 dataset](https://www.salesforce.com/products/einstein/ai-research/the-wikitext-dependency-language-modeling-dataset/)
 to demonstrate how to preprocess raw text data with the GPT-2 BPE. Of course
@@ -61,7 +61,7 @@ DATA_DIR=data-bin/wikitext-103
 fairseq-train --fp16 $DATA_DIR \
     --task masked_lm --criterion masked_lm \
     --arch roberta_base --sample-break-mode complete --tokens-per-sample $TOKENS_PER_SAMPLE \
-    --optimizer adam --adam-betas '(0.9, 0.98)' --adam-eps 1e-6 --clip-norm 0.0 \
+    --optimizer adam --adam-betas '(0.9,0.98)' --adam-eps 1e-6 --clip-norm 0.0 \
     --lr-scheduler polynomial_decay --lr $PEAK_LR --warmup-updates $WARMUP_UPDATES --total-num-update $TOTAL_UPDATES \
     --dropout 0.1 --attention-dropout 0.1 --weight-decay 0.01 \
     --max-sentences $MAX_SENTENCES --update-freq $UPDATE_FREQ \
