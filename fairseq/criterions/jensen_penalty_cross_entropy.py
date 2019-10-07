@@ -16,9 +16,9 @@ def smoothed_nll_loss(lprobs, target, alpha, beta, ignore_index=None, reduce=Tru
     #ent_u = -torch.log(uni_probs).mul(uni_probs).sum(dim=-1, keepdim=True)
     #assert ent_u.sum() >= ent_p.sum()
 
-    comb = torch.exp(lprobs) * self.alpha + uni_probs * (1. - self.alpha)
+    comb = torch.exp(lprobs) * alpha + uni_probs * (1. - alpha)
     ent_c = -torch.log(comb).mul(comb).sum(dim=-1, keepdim=True)
-    ent = ent_c - self.alpha * ent_p # not including (1 - alpha) * ent_u since it's constant
+    ent = ent_c - alpha * ent_p # not including (1 - alpha) * ent_u since it's constant
 
     if ignore_index is not None:
         non_pad_mask = target.ne(ignore_index)
