@@ -12,7 +12,6 @@ def smoothed_nll_loss(lprobs, target, alpha, beta, dist, ignore_index=None, redu
     nll_loss = -lprobs.gather(dim=-1, index=target)
     ent_p = -torch.exp(lprobs).mul(lprobs).sum(dim=-1, keepdim=True)
     uni_probs = torch.ones(lprobs.size(), device=lprobs.device) * dist
-    print(uni_probs.sum(dim=1).isclose(torch.ones(lprobs.size(0), device=lprobs.device)))
     assert uni_probs.sum(dim=1).isclose(torch.ones(lprobs.size(0), device=lprobs.device)).all()
 
     comb = torch.exp(lprobs) * alpha + uni_probs * (1. - alpha)

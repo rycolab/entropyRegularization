@@ -10,11 +10,16 @@ Train a new model on one or across multiple GPUs.
 import collections
 import math
 import random
+import os
+import re
+import threading
+import string
+import pickle
 
 import numpy as np
 import torch
 
-from fairseq import checkpoint_utils, distributed_utils, options, progress_bar, tasks, utils
+from fairseq import checkpoint_utils, distributed_utils, options, progress_bar, tasks, utils, bleu
 from fairseq.data import iterators
 from fairseq.trainer import Trainer
 from fairseq.meters import AverageMeter, StopwatchMeter
@@ -72,6 +77,7 @@ def main(args, init_distributed=False):
     # Train until the learning rate gets too small
     max_epoch = args.max_epoch or math.inf
     max_update = args.max_update or math.inf
+    not_best_checkpoint = 0
     lr = trainer.get_lr()
     train_meter = StopwatchMeter()
     train_meter.start()
@@ -80,7 +86,7 @@ def main(args, init_distributed=False):
         # train for one epoch
         train(args, trainer, task, epoch_itr)
 
-        if not args.disable_validation and epoch_itr.epoch % args.validate_interval == 0:   
+        if not args.disable_validation and epoch_itr.epoch % args.validate_interval == 0:
             valid_losses = validate(args, trainer, task, epoch_itr, valid_subsets)
             if args.patience > 0:
                 prev_best = getattr(checkpoint_utils.save_checkpoint, 'best', valid_losses[0])
@@ -148,9 +154,6 @@ def train(args, trainer, task, epoch_itr):
         progress.log(stats, tag='train', step=stats['num_updates'])
 
         # ignore the first mini-batch in words-per-second calculation
-        if i == 0:
-            trainer.get_meter('wps').reset()
-
         num_updates = trainer.get_num_updates()
         if (
             not args.disable_validation
@@ -302,9 +305,147 @@ def distributed_main(i, args, start_rank=0):
     main(args, init_distributed=True)
 
 
-def cli_main():
+def run_generation(ckpt, results):
+    gen_parser = options.get_generation_parser()
+    args = options.parse_args_and_arch(gen_parser, input_args = [ 'data-bin/iwslt14.tokenized.de-en', 
+        '--gen-subset', 'valid', '--path', ckpt, '--beam', '10','--max-tokens', '4000', 
+        '--remove-bpe', '--log-format', 'none'])
+
+    use_cuda = torch.cuda.is_available() and not args.cpu
+    # if use_cuda:
+    #     lock.acquire()
+    #     torch.cuda.set_device(device_id)
+    #     lock.release()
+    
+    utils.import_user_module(args)
+    task = tasks.setup_task(args)
+    task.load_dataset(args.gen_subset)
+
+    # Set dictionaries
+    try:
+        src_dict = getattr(task, 'source_dictionary', None)
+    except NotImplementedError:
+        src_dict = None
+    tgt_dict = task.target_dictionary
+
+    # Load ensemble
+    print('| loading model(s) from {}'.format(args.path))
+    models, _model_args = checkpoint_utils.load_model_ensemble(
+        args.path.split(':'),
+        arg_overrides=eval(args.model_overrides),
+        task=task,
+    )
+
+    # Optimize ensemble for generation
+    for model in models:
+        model.make_generation_fast_(
+            beamable_mm_beam_size=None if args.no_beamable_mm else args.beam,
+            need_attn=args.print_alignment,
+        )
+        if args.fp16:
+            model.half()
+        if use_cuda:
+            model.cuda()
+
+    # Load alignment dictionary for unknown word replacement
+    # (None if no unknown word replacement, empty if no path to align dictionary)
+    align_dict = utils.load_align_dict(args.replace_unk)
+
+    # Load dataset (possibly sharded)
+    itr = task.get_batch_iterator(
+        dataset=task.dataset(args.gen_subset),
+        max_tokens=args.max_tokens,
+        max_sentences=args.max_sentences,
+        max_positions=utils.resolve_max_positions(
+            task.max_positions(),
+            *[model.max_positions() for model in models]
+        ),
+        ignore_invalid_inputs=args.skip_invalid_size_inputs_valid_test,
+        required_batch_size_multiple=args.required_batch_size_multiple,
+        num_shards=args.num_shards,
+        shard_id=args.shard_id,
+        num_workers=args.num_workers,
+    ).next_epoch_itr(shuffle=False)
+
+    # Initialize generator
+    generator = task.build_generator(args)
+
+    # Generate and compute BLEU score
+    if args.sacrebleu:
+        scorer = bleu.SacrebleuScorer()
+    else:
+        scorer = bleu.Scorer(tgt_dict.pad(), tgt_dict.eos(), tgt_dict.unk())
+    num_sentences = 0
+    has_target = True
+    with progress_bar.build_progress_bar(args, itr) as t:
+        for sample in t:
+            sample = utils.move_to_cuda(sample) if use_cuda else sample
+            if 'net_input' not in sample:
+                continue
+
+            prefix_tokens = None
+            if args.prefix_size > 0:
+                prefix_tokens = sample['target'][:, :args.prefix_size]
+
+            hypos = task.inference_step(generator, models, sample, prefix_tokens)
+            num_generated_tokens = sum(len(h[0]['tokens']) for h in hypos)
+
+            for i, sample_id in enumerate(sample['id'].tolist()):
+                has_target = sample['target'] is not None
+
+                # Remove padding
+                src_tokens = utils.strip_pad(sample['net_input']['src_tokens'][i, :], tgt_dict.pad())
+                target_tokens = None
+                if has_target:
+                    target_tokens = utils.strip_pad(sample['target'][i, :], tgt_dict.pad()).int().cpu()
+
+                # Either retrieve the original sentences or regenerate them from tokens.
+                if align_dict is not None:
+                    src_str = task.dataset(args.gen_subset).src.get_original_text(sample_id)
+                    target_str = task.dataset(args.gen_subset).tgt.get_original_text(sample_id)
+                else:
+                    if src_dict is not None:
+                        src_str = src_dict.string(src_tokens, args.remove_bpe)
+                    else:
+                        src_str = ""
+                    if has_target:
+                        target_str = tgt_dict.string(target_tokens, args.remove_bpe, escape_unk=True)
+                # Process top predictions
+                for j, hypo in enumerate(hypos[i][:args.nbest]):
+                    hypo_tokens, hypo_str, alignment = utils.post_process_prediction(
+                        hypo_tokens=hypo['tokens'].int().cpu(),
+                        src_str=src_str,
+                        alignment=hypo['alignment'],
+                        align_dict=align_dict,
+                        tgt_dict=tgt_dict,
+                        remove_bpe=args.remove_bpe,
+                    )
+
+                    # Score only the top hypothesis
+                    if has_target and j == 0:
+                        if align_dict is not None or args.remove_bpe is not None:
+                            # Convert back to tokens for evaluation with unk replacement and/or without BPE
+                            target_tokens = tgt_dict.encode_line(target_str, add_if_not_exist=True)
+                        if hasattr(scorer, 'add_string'):
+                            scorer.add_string(target_str, hypo_str)
+                        else:
+                            scorer.add(target_tokens, hypo_tokens)
+
+            num_sentences += sample['nsentences']
+
+    results[ckpt] = scorer.score()
+
+def train_main(args):
     parser = options.get_training_parser()
-    args = options.parse_args_and_arch(parser)
+    input_args = ['data-bin/iwslt14.tokenized.de-en','--arch', 
+            'fconv_iwslt_de_en', '--max-tokens', '4000', '--keep-last-epochs', '7',
+            '--save-interval', '3', '--max-epoch', '210', '--patience', '10',
+            '--clip-norm', '0.1', '--dropout', '0.2', '--criterion', 'jensen_cross_entropy',
+            '--lr-scheduler', 'fixed', '--min-lr', '1e-8']
+    for k,v in args.items():
+        input_args.append('--'+ k)
+        input_args.append(str(v))
+    args = options.parse_args_and_arch(parser, input_args=input_args)
 
     if args.distributed_init_method is None:
         distributed_utils.infer_init_method(args)
@@ -338,6 +479,111 @@ def cli_main():
         # single GPU training
         main(args)
 
+    ckpts = os.listdir(args.save_dir)
+    try:
+        ckpts.remove('checkpoint_last.pt')
+    except ValueError:
+        print("no checkpoint_last.pt in folder", args.save_dir)
+    assert len(ckpts) <= 8
 
+    results = {}
+    for ckpt in ckpts:
+        path = os.path.join(args.save_dir, ckpt)
+        run_generation(path, results)
+
+    return results, args
+
+
+from hyperopt import fmin, tpe, hp, STATUS_OK, Trials
+
+def objective(params):
+    print(params)
+    global ITERATIONS
+    ITERATIONS += 1
+    
+    save_path = os.path.join(models_dir, str(ITERATIONS))
+    if not os.path.exists(save_path):
+        os.mkdir(save_path)
+    params['save-dir'] = save_path
+
+    params['T'] = math.exp(params['log_t'])
+    params.pop('log_t')
+    val_scores, args = train_main(params)
+
+    return {
+            'loss': - max(val_scores.values()),
+            'status': STATUS_OK,
+            # -- store other results like this
+            'params': params,
+            'args' : args,
+            'save_dir': save_path,
+            'scores': val_scores,
+            # -- attachments are handled differently
+            
+            }
+
+def run():
+    global ITERATIONS
+    ITERATIONS = 0
+
+    space = {
+        'lr': hp.uniform('lr', 0.05, 0.6),
+        'alpha': hp.uniform('alpha', 0., 1.0),
+        'log_t': hp.uniform('log_t', 0., 20.),
+        'beta': hp.uniform('beta', 0.0, 0.5)
+    }
+    import numpy as np
+    seed = 18
+    try:
+        # https://github.com/hyperopt/hyperopt/issues/267
+        trials = pickle.load(open("results_temp.pkl", "rb"))
+        print("Found saved Trials! Loading...")
+        max_evals = len(trials.trials) + 1
+        print("Rerunning from {} trials to add another one.".format(
+            len(trials.trials)))
+    except:
+        trials = Trials()
+        print("Starting from scratch: new trials.")
+
+    try: 
+        best = fmin(objective,
+            space=space,
+            algo=tpe.suggest,
+            max_evals=30,
+            trials=trials,
+            verbose=1,
+            rstate=np.random.RandomState(seed))
+
+        print(best)
+        print(trials.trials)
+        with open("results.pkl", "wb") as f:
+            pickle.dump(trials, f)
+
+    except:
+        with open("results_crash.pkl", "wb") as f:
+            pickle.dump(trials, f)
+
+# make sure generations isn't crashing before starting tests...
+def gen_test(dirr):
+    ckpts = os.listdir(dirr)
+    assert len(ckpts) == 8
+    results = {}
+    threads = []
+    lock = threading.Lock()
+    for i, ckpt in enumerate(ckpts):
+        path = os.path.join(dirr, ckpt)
+        threads.append(threading.Thread(target=run_generation, args=(i, path, lock, results)))
+        threads[-1].start()
+        print(i)
+
+    [t.join(timeout=900) for t in threads]    
+
+    print(results)
+
+models_dir = 'ckpts/entropy_reg/'    
 if __name__ == '__main__':
-    cli_main()
+    run()
+    #gen_test('ckpts/entropy_reg/1')
+
+
+

@@ -26,9 +26,6 @@ def save_checkpoint(args, trainer, epoch_itr, val_loss):
         best_function = max if args.maximize_best_checkpoint_metric else min
         save_checkpoint.best = best_function(val_loss, prev_best)
 
-    if args.no_save or not distributed_utils.is_master(args):
-        return
-
     def is_better(a, b):
         return a >= b if args.maximize_best_checkpoint_metric else a <= b
 
@@ -53,6 +50,9 @@ def save_checkpoint(args, trainer, epoch_itr, val_loss):
         (not hasattr(save_checkpoint, 'best') or is_better(val_loss, save_checkpoint.best))
     )
     checkpoint_conds['checkpoint_last.pt'] = not args.no_last_checkpoints
+
+    if args.no_save or not distributed_utils.is_master(args):
+        return
 
     extra_state = {
         'train_iterator': epoch_itr.state_dict(),
