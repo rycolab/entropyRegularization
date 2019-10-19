@@ -435,16 +435,15 @@ def run_generation(ckpt, results):
 
     results[ckpt] = scorer.score()
 
-def train_main(args):
+def train_main(alpha, beta, save_path):
     parser = options.get_training_parser()
     input_args = ['data-bin/iwslt14.tokenized.de-en','--arch', 
             'fconv_iwslt_de_en', '--max-tokens', '4000', '--keep-last-epochs', '7',
-            '--save-interval', '3', '--max-epoch', '210', '--patience', '10',
+            '--save-interval', '3', '--max-epoch', '210', '--patience', '15',
             '--clip-norm', '0.1', '--dropout', '0.2', '--criterion', 'jensen_cross_entropy',
-            '--lr-scheduler', 'fixed', '--min-lr', '1e-8']
-    for k,v in args.items():
-        input_args.append('--'+ k)
-        input_args.append(str(v))
+            '--lr-scheduler', 'fixed', '--min-lr', '1e-8', '--lr', '0.5', '--alpha', str(alpha),
+            '--beta', str(beta), '--use-uni', '--save-dir', save_path]
+    
     args = options.parse_args_and_arch(parser, input_args=input_args)
 
     if args.distributed_init_method is None:
@@ -491,99 +490,65 @@ def train_main(args):
         path = os.path.join(args.save_dir, ckpt)
         run_generation(path, results)
 
-    return results, args
+    return results
 
 
-from hyperopt import fmin, tpe, hp, STATUS_OK, Trials
-
-def objective(params):
-    print(params)
+def objective(alpha, beta):
+    print("alpha", alpha, "beta", beta)
     global ITERATIONS
     ITERATIONS += 1
     
     save_path = os.path.join(models_dir, str(ITERATIONS))
     if not os.path.exists(save_path):
         os.mkdir(save_path)
-    params['save-dir'] = save_path
 
-    params['T'] = math.exp(params['log_t'])
-    params.pop('log_t')
-    val_scores, args = train_main(params)
+    #T = math.exp(log_t)
+    val_scores = train_main(alpha, beta,  save_path)
 
-    return {
-            'loss': - max(val_scores.values()),
-            'status': STATUS_OK,
-            # -- store other results like this
-            'params': params,
-            'args' : args,
-            'save_dir': save_path,
-            'scores': val_scores,
-            # -- attachments are handled differently
-            
-            }
+    print(max(val_scores.values()))
 
-def run():
+    return max(val_scores.values())
+
+def optimize():
     global ITERATIONS
     ITERATIONS = 0
+    MAX_EVALS = 30
 
-    space = {
-        'lr': hp.uniform('lr', 0.05, 0.6),
-        'alpha': hp.uniform('alpha', 0., 1.0),
-        'log_t': hp.uniform('log_t', 0., 20.),
-        'beta': hp.uniform('beta', 0.0, 0.5)
-    }
-    import numpy as np
-    seed = 18
+    from bayes_opt import BayesianOptimization
+
+    # Bounded region of parameter space
+    pbounds = {'alpha': (0.001, 0.999), 'beta': (0., 2.0)}
+
+    optimizer = BayesianOptimization(
+        f=objective,
+        pbounds=pbounds,
+        random_state=1,
+    )
+
     try:
-        # https://github.com/hyperopt/hyperopt/issues/267
-        trials = pickle.load(open("results_temp.pkl", "rb"))
-        print("Found saved Trials! Loading...")
-        max_evals = len(trials.trials) + 1
-        print("Rerunning from {} trials to add another one.".format(
-            len(trials.trials)))
-    except:
-        trials = Trials()
+        from bayes_opt.util import load_logs
+        load_logs(optimizer, logs=["logs.json"]);
+        print("Rerunning from {} trials".format(
+            len(optimizer.res)))
+    except e:
         print("Starting from scratch: new trials.")
 
-    try: 
-        best = fmin(objective,
-            space=space,
-            algo=tpe.suggest,
-            max_evals=30,
-            trials=trials,
-            verbose=1,
-            rstate=np.random.RandomState(seed))
+    from bayes_opt.observer import JSONLogger
+    from bayes_opt.event import Events
 
-        print(best)
-        print(trials.trials)
-        with open("results.pkl", "wb") as f:
-            pickle.dump(trials, f)
+    logger = JSONLogger(path="logs.json")
+    optimizer.subscribe(Events.OPTMIZATION_STEP, logger)
 
-    except:
-        with open("results_crash.pkl", "wb") as f:
-            pickle.dump(trials, f)
-
-# make sure generations isn't crashing before starting tests...
-def gen_test(dirr):
-    ckpts = os.listdir(dirr)
-    assert len(ckpts) == 8
-    results = {}
-    threads = []
-    lock = threading.Lock()
-    for i, ckpt in enumerate(ckpts):
-        path = os.path.join(dirr, ckpt)
-        threads.append(threading.Thread(target=run_generation, args=(i, path, lock, results)))
-        threads[-1].start()
-        print(i)
-
-    [t.join(timeout=900) for t in threads]    
-
-    print(results)
+    # Results will be saved in ./logs.json
+    optimizer.maximize(
+        init_points=max(0, 5 - len(optimizer.res)),
+        n_iter=MAX_EVALS - len(optimizer.res),
+    )
+    print(optimizer.max)
 
 models_dir = 'ckpts/entropy_reg/'    
 if __name__ == '__main__':
-    run()
-    #gen_test('ckpts/entropy_reg/1')
+    optimize()
 
 
 

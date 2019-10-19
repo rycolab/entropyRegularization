@@ -4,17 +4,23 @@
 # LICENSE file in the root directory of this source tree.
 
 import math
+import torch
 
 from fairseq import utils
 
 from . import FairseqCriterion, register_criterion
 
 
-def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None, reduce=True):
+def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None, reduce=True, dist=None):
     if target.dim() == lprobs.dim() - 1:
         target = target.unsqueeze(-1)
     nll_loss = -lprobs.gather(dim=-1, index=target)
-    smooth_loss = -lprobs.sum(dim=-1, keepdim=True)
+    if dist is not None:
+        uni_probs = torch.ones(lprobs.size(), device=lprobs.device) * dist
+        smooth_loss = -uni_probs.mul(lprobs).sum(dim=-1, keepdim=True)
+        # assert (smooth_loss + uni_probs.mul(torch.log(uni_probs))).sum() >= 0
+    else:
+        smooth_loss = -lprobs.sum(dim=-1, keepdim=True)
     if ignore_index is not None:
         non_pad_mask = target.ne(ignore_index)
         nll_loss = nll_loss[non_pad_mask]
@@ -25,7 +31,7 @@ def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None, reduce=T
     if reduce:
         nll_loss = nll_loss.sum()
         smooth_loss = smooth_loss.sum()
-    eps_i = epsilon / lprobs.size(-1)
+    eps_i = epsilon if dist is not None else epsilon / lprobs.size(-1) 
     loss = (1. - epsilon) * nll_loss + eps_i * smooth_loss
     return loss, nll_loss
 
@@ -36,6 +42,15 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
     def __init__(self, args, task):
         super().__init__(args, task)
         self.eps = args.label_smoothing
+        tgt_dict = task.target_dictionary
+        if args.T >= 1:
+            self.use_uni_dist = True
+            self.unigram_dist = torch.Tensor(tgt_dict.count)
+            self.unigram_dist[tgt_dict.eos_index] = self.unigram_dist[tgt_dict.index('.')]
+            self.unigram_dist = self.unigram_dist.pow(1./args.T)
+            self.unigram_dist = self.unigram_dist/self.unigram_dist.sum()
+            if torch.cuda.is_available() and not args.cpu:
+                self.unigram_dist = self.unigram_dist.cuda()
 
     @staticmethod
     def add_args(parser):
@@ -43,6 +58,8 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         # fmt: off
         parser.add_argument('--label-smoothing', default=0., type=float, metavar='D',
                             help='epsilon for label smoothing, 0 means no label smoothing')
+        parser.add_argument('--T', default=0, type=float, metavar='N',
+                            help='unigram distribution annealing factor')
         # fmt: on
 
     def forward(self, model, sample, reduce=True):
@@ -54,11 +71,12 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         3) logging outputs to display while training
         """
         net_output = model(**sample['net_input'])
-        loss, nll_loss = self.compute_loss(model, net_output, sample, reduce=reduce)
+        loss, nll_loss, entropy = self.compute_loss(model, net_output, sample, reduce=reduce)
         sample_size = sample['target'].size(0) if self.args.sentence_avg else sample['ntokens']
         logging_output = {
             'loss': utils.item(loss.data) if reduce else loss.data,
             'nll_loss': utils.item(nll_loss.data) if reduce else nll_loss.data,
+            'entropy': utils.item(entropy.data) if reduce else entropy.data,
             'ntokens': sample['ntokens'],
             'nsentences': sample['target'].size(0),
             'sample_size': sample_size,
@@ -68,11 +86,14 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
     def compute_loss(self, model, net_output, sample, reduce=True):
         lprobs = model.get_normalized_probs(net_output, log_probs=True)
         lprobs = lprobs.view(-1, lprobs.size(-1))
+        entropy = - (lprobs * torch.exp(lprobs)).sum(dim=-1)
+        if reduce:
+            entropy = entropy.sum()
         target = model.get_targets(sample, net_output).view(-1, 1)
         loss, nll_loss = label_smoothed_nll_loss(
             lprobs, target, self.eps, ignore_index=self.padding_idx, reduce=reduce,
-        )
-        return loss, nll_loss
+        dist=self.unigram_dist if self.use_uni_dist else None)
+        return loss, nll_loss, entropy
 
     @staticmethod
     def aggregate_logging_outputs(logging_outputs):
@@ -83,6 +104,7 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         return {
             'loss': sum(log.get('loss', 0) for log in logging_outputs) / sample_size / math.log(2) if sample_size > 0 else 0.,
             'nll_loss': sum(log.get('nll_loss', 0) for log in logging_outputs) / ntokens / math.log(2) if ntokens > 0 else 0.,
+            'entropy': sum(log.get('entropy', 0) for log in logging_outputs) / ntokens if ntokens > 0 else 0.,
             'ntokens': ntokens,
             'nsentences': nsentences,
             'sample_size': sample_size,

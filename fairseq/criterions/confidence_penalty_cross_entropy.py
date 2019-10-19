@@ -11,23 +11,28 @@ from fairseq import utils
 from . import FairseqCriterion, register_criterion
 import torch.distributions as d
 
-def smoothed_nll_loss(lprobs, target, beta, ignore_index=None, reduce=True):
+def smoothed_nll_loss(lprobs, target, beta, ignore_index=None, reduce=True, dist=None):
     if target.dim() == lprobs.dim() - 1:
         target = target.unsqueeze(-1)
     nll_loss = -lprobs.gather(dim=-1, index=target)
-    ent = -torch.exp(lprobs).mul(lprobs).sum(dim=-1, keepdim=True)
+    if dist is not None:
+        uni_probs = torch.ones(lprobs.size(), device=lprobs.device) * dist
+        divergence = (torch.exp(lprobs).mul(lprobs) - torch.exp(lprobs).mul(torch.log(uni_probs))).sum(dim=-1, keepdim=True)
+        assert divergence.sum() >= 0
+    else:
+        divergence = torch.exp(lprobs).mul(lprobs).sum(dim=-1, keepdim=True)
     
     if ignore_index is not None:
         non_pad_mask = target.ne(ignore_index)
         nll_loss = nll_loss[non_pad_mask]
-        ent = ent[non_pad_mask]
+        divergence = divergence[non_pad_mask]
     else:
         nll_loss = nll_loss.squeeze(-1)
-        ent = ent.squeeze(-1)
+        divergence = divergence.squeeze(-1)
     if reduce:
         nll_loss = nll_loss.sum()
-        ent = ent.sum()
-    loss = nll_loss - beta * ent
+        divergence = divergence.sum()
+    loss = nll_loss + beta * divergence
     return loss, nll_loss
 
 
@@ -37,6 +42,15 @@ class ConfidencePenaltyCrossEntropyCriterion(FairseqCriterion):
     def __init__(self, args, task):
         super().__init__(args, task)
         self.eps = args.beta
+        tgt_dict = task.target_dictionary
+        if args.T >= 1:
+            self.use_uni_dist = True
+            self.unigram_dist = torch.Tensor(tgt_dict.count)
+            self.unigram_dist[tgt_dict.eos_index] = self.unigram_dist[tgt_dict.index('.')]
+            self.unigram_dist = self.unigram_dist.pow(1./args.T)
+            self.unigram_dist = self.unigram_dist/self.unigram_dist.sum()
+            if torch.cuda.is_available() and not args.cpu:
+                self.unigram_dist = self.unigram_dist.cuda()
 
     @staticmethod
     def add_args(parser):
@@ -44,6 +58,8 @@ class ConfidencePenaltyCrossEntropyCriterion(FairseqCriterion):
         # fmt: off
         parser.add_argument('--beta', default=0., type=float, metavar='D',
                             help='weight of penalty')
+        parser.add_argument('--T', default=0, type=float, metavar='N',
+                            help='unigram distribution annealing factor')
         # fmt: on
 
     def forward(self, model, sample, reduce=True):
@@ -72,6 +88,7 @@ class ConfidencePenaltyCrossEntropyCriterion(FairseqCriterion):
         target = model.get_targets(sample, net_output).view(-1, 1)
         loss, nll_loss = smoothed_nll_loss(
             lprobs, target, self.eps, ignore_index=self.padding_idx, reduce=reduce,
+            dist=self.unigram_dist if self.use_uni_dist else None
         )
         return loss, nll_loss
 
