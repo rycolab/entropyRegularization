@@ -65,7 +65,11 @@ def save_checkpoint(args, trainer, epoch_itr, val_loss):
     if len(checkpoints) > 0:
         trainer.save_checkpoint(checkpoints[0], extra_state)
         for cp in checkpoints[1:]:
-            shutil.copyfile(checkpoints[0], cp)
+            try:
+                from fairseq.fb_pathmgr import fb_pathmgr
+                fb_pathmgr.copy(checkpoints[0], cp, True)
+            except (ModuleNotFoundError, ImportError):
+                shutil.copyfile(checkpoints[0], cp)
 
         write_timer.stop()
         print('| saved checkpoint {} (epoch {} @ {} updates) (writing took {} seconds)'.format(
@@ -90,7 +94,7 @@ def save_checkpoint(args, trainer, epoch_itr, val_loss):
                 os.remove(old_chk)
 
 
-def load_checkpoint(args, trainer):
+def load_checkpoint(args, trainer, data_selector=None):
     """Load a checkpoint and restore the training iterator."""
     # only one worker should attempt to create the required dir
     if args.distributed_rank == 0:
@@ -120,10 +124,10 @@ def load_checkpoint(args, trainer):
     if extra_state is not None and not args.reset_dataloader:
         # restore iterator from checkpoint
         itr_state = extra_state['train_iterator']
-        epoch_itr = trainer.get_train_iterator(epoch=itr_state['epoch'], load_dataset=True)
+        epoch_itr = trainer.get_train_iterator(epoch=itr_state['epoch'], load_dataset=True, data_selector=data_selector)
         epoch_itr.load_state_dict(itr_state)
     else:
-        epoch_itr = trainer.get_train_iterator(epoch=0, load_dataset=True)
+        epoch_itr = trainer.get_train_iterator(epoch=0, load_dataset=True, data_selector=data_selector)
 
     trainer.lr_step(epoch_itr.epoch)
 
@@ -132,9 +136,17 @@ def load_checkpoint(args, trainer):
 
 def load_checkpoint_to_cpu(path, arg_overrides=None):
     """Loads a checkpoint to CPU (with upgrading for backward compatibility)."""
-    state = torch.load(
-        path, map_location=lambda s, l: default_restore_location(s, 'cpu'),
-    )
+    try:
+        from fairseq.fb_pathmgr import fb_pathmgr
+        with fb_pathmgr.open(path, "rb") as f:
+            state = torch.load(
+                f, map_location=lambda s, l: default_restore_location(s, 'cpu'),
+            )
+    except (ModuleNotFoundError, ImportError):
+        # if path manager not found, continue with local file.
+        state = torch.load(
+            path, map_location=lambda s, l: default_restore_location(s, 'cpu'),
+        )
     args = state['args']
     if arg_overrides is not None:
         for arg_name, arg_val in arg_overrides.items():
@@ -244,7 +256,14 @@ def save_state(
         state_dict['criterion'] = criterion.state_dict()
     if not args.no_save_optimizer_state:
         state_dict['last_optimizer_state'] = convert_state_dict_type(optimizer.state_dict())
-    torch_persistent_save(state_dict, filename)
+
+    try:
+        from fairseq.fb_pathmgr import fb_pathmgr
+        with fb_pathmgr.open(filename, "wb") as f:
+            torch_persistent_save(state_dict, f)
+    except (ModuleNotFoundError, ImportError):
+        # if path manager not found, continue with local file.
+        torch_persistent_save(state_dict, filename)
 
 
 def _upgrade_state_dict(state):
