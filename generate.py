@@ -1,4 +1,4 @@
-#!/usr/bin/env python3 -u
+ #!/usr/bin/env python3 -u
 # Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
@@ -89,13 +89,16 @@ def main(args):
         scorer = bleu.Scorer(tgt_dict.pad(), tgt_dict.eos(), tgt_dict.unk())
     num_sentences = 0
     has_target = True
+    entropies = []
+    token_counts = []
+
     with progress_bar.build_progress_bar(args, itr) as t:
         wps_meter = TimeMeter()
         for sample in t:
             sample = utils.move_to_cuda(sample) if use_cuda else sample
             if 'net_input' not in sample:
                 continue
-
+            
             prefix_tokens = None
             if args.prefix_size > 0:
                 prefix_tokens = sample['target'][:, :args.prefix_size]
@@ -104,6 +107,10 @@ def main(args):
             hypos = task.inference_step(generator, models, sample, prefix_tokens)
             num_generated_tokens = sum(len(h[0]['tokens']) for h in hypos)
             gen_timer.stop(num_generated_tokens)
+
+            if 'avg_ent' in sample:
+                entropies.append(sample['avg_ent'][0])
+                token_counts.append(sample['avg_ent'][1])
 
             for i, sample_id in enumerate(sample['id'].tolist()):
                 has_target = sample['target'] is not None
@@ -180,7 +187,7 @@ def main(args):
         num_sentences, gen_timer.n, gen_timer.sum, num_sentences / gen_timer.sum, 1. / gen_timer.avg))
     if has_target:
         print('| Generate {} with beam={}: {}'.format(args.gen_subset, args.beam, scorer.result_string()))
-
+    print({'bleu': scorer.score(), 'entropy': sum(entropies)/sum(token_counts)})
     return scorer
 
 

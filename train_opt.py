@@ -23,7 +23,7 @@ from fairseq import checkpoint_utils, distributed_utils, options, progress_bar, 
 from fairseq.data import iterators
 from fairseq.trainer import Trainer
 from fairseq.meters import AverageMeter, StopwatchMeter
-
+CUR_FILE = None
 
 def main(args, init_distributed=False):
     utils.import_user_module(args)
@@ -209,7 +209,6 @@ def get_training_stats(trainer):
 
 def validate(args, trainer, task, epoch_itr, subsets):
     """Evaluate the model on the validation set(s) and return the losses."""
-
     if args.fixed_validation_seed is not None:
         # set fixed seed for every validation
         utils.set_torch_seed(args.fixed_validation_seed)
@@ -258,7 +257,10 @@ def validate(args, trainer, task, epoch_itr, subsets):
         for k, meter in extra_meters.items():
             stats[k] = meter.avg
         progress.print(stats, tag=subset, step=trainer.get_num_updates())
-
+        if args.distributed_rank == 0:
+            CUR_FILE = open(os.path.join(args.save_dir, 'entropy.txt'),"a+")
+            CUR_FILE.write(str({'loss':stats['loss'].avg, 'nll_loss':stats['nll_loss'].avg, 'entropy': stats['entropy']}) + '\n')
+            CUR_FILE.close()
         valid_losses.append(
             stats[args.best_checkpoint_metric].avg
             if args.best_checkpoint_metric == 'loss'
@@ -305,7 +307,7 @@ def distributed_main(i, args, start_rank=0):
     main(args, init_distributed=True)
 
 
-def run_generation(ckpt, results):
+def run_generation(ckpt, results, ents):
     gen_parser = options.get_generation_parser()
     args = options.parse_args_and_arch(gen_parser, input_args = [ 'data-bin/iwslt14.tokenized.de-en', 
         '--gen-subset', 'valid', '--path', ckpt, '--beam', '10','--max-tokens', '4000', 
@@ -377,6 +379,8 @@ def run_generation(ckpt, results):
         scorer = bleu.Scorer(tgt_dict.pad(), tgt_dict.eos(), tgt_dict.unk())
     num_sentences = 0
     has_target = True
+    entropies = []
+    token_counts = []
     with progress_bar.build_progress_bar(args, itr) as t:
         for sample in t:
             sample = utils.move_to_cuda(sample) if use_cuda else sample
@@ -389,6 +393,11 @@ def run_generation(ckpt, results):
 
             hypos = task.inference_step(generator, models, sample, prefix_tokens)
             num_generated_tokens = sum(len(h[0]['tokens']) for h in hypos)
+
+            if 'avg_ent' in sample:
+                entropies.append(sample['avg_ent'][0])
+                token_counts.append(sample['avg_ent'][1])
+
 
             for i, sample_id in enumerate(sample['id'].tolist()):
                 has_target = sample['target'] is not None
@@ -434,18 +443,18 @@ def run_generation(ckpt, results):
             num_sentences += sample['nsentences']
 
     results[ckpt] = scorer.score()
+    ents[ckpt] = sum(entropies)/sum(token_counts)
 
 def train_main(alpha, beta, save_path):
     parser = options.get_training_parser()
     input_args = ['data-bin/iwslt14.tokenized.de-en','--arch', 
-            'fconv_iwslt_de_en', '--max-tokens', '4000', '--keep-last-epochs', '7',
-            '--save-interval', '3', '--max-epoch', '210', '--patience', '15',
+            'fconv_iwslt_de_en', '--max-tokens', '4000', '--keep-last-epochs', '20',
+            '--save-interval', '2', '--max-epoch', '200', '--patience', '15',
             '--clip-norm', '0.1', '--dropout', '0.2', '--criterion', 'jensen_cross_entropy',
             '--lr-scheduler', 'fixed', '--min-lr', '1e-8', '--lr', '0.5', '--alpha', str(alpha),
             '--beta', str(beta), '--use-uni', '--save-dir', save_path]
     
     args = options.parse_args_and_arch(parser, input_args=input_args)
-
     if args.distributed_init_method is None:
         distributed_utils.infer_init_method(args)
 
@@ -483,27 +492,30 @@ def train_main(alpha, beta, save_path):
         ckpts.remove('checkpoint_last.pt')
     except ValueError:
         print("no checkpoint_last.pt in folder", args.save_dir)
-    assert len(ckpts) <= 8
+    #assert len(ckpts) <= 8
 
+    f = open(os.path.join(args.save_dir,"final_entropies.txt"), "a+")
     results = {}
+    entropies = {}
     for ckpt in ckpts:
-        path = os.path.join(args.save_dir, ckpt)
-        run_generation(path, results)
-
+        if '.pt' in ckpt:
+            path = os.path.join(args.save_dir, ckpt)
+            f.write(path + '\n')
+            run_generation(path, results, entropies)
+            f.write('{entropy: '+  str(entropies[path]) + ', bleu: '+  str(results[path]) +'}\n')
+    f.close()
     return results
 
 
 def objective(alpha, beta):
-    print("alpha", alpha, "beta", beta)
-    global ITERATIONS
-    ITERATIONS += 1
+    print("alpha", alpha, 'beta', beta)
     
-    save_path = os.path.join(models_dir, str(ITERATIONS))
+    save_path = os.path.join(models_dir, str(round(alpha,3)).replace('.', '') + '_' + str(round(beta,3)).replace('.', ''))
     if not os.path.exists(save_path):
         os.mkdir(save_path)
 
     #T = math.exp(log_t)
-    val_scores = train_main(alpha, beta,  save_path)
+    val_scores = train_main( alpha,beta, save_path)
 
     print(max(val_scores.values()))
 
@@ -511,7 +523,7 @@ def objective(alpha, beta):
 
 def optimize():
     global ITERATIONS
-    ITERATIONS = 0
+    ITERATIONS = 1
     MAX_EVALS = 30
 
     from bayes_opt import BayesianOptimization
@@ -530,7 +542,7 @@ def optimize():
         load_logs(optimizer, logs=["logs.json"]);
         print("Rerunning from {} trials".format(
             len(optimizer.res)))
-    except e:
+    except:
         print("Starting from scratch: new trials.")
 
     from bayes_opt.observer import JSONLogger
@@ -541,14 +553,17 @@ def optimize():
 
     # Results will be saved in ./logs.json
     optimizer.maximize(
-        init_points=max(0, 5 - len(optimizer.res)),
-        n_iter=MAX_EVALS - len(optimizer.res),
+        init_points=7,#max(0, 5 - len(optimizer.res)),
+        n_iter=MAX_EVALS,
     )
     print(optimizer.max)
 
-models_dir = 'ckpts/entropy_reg/'    
+global ITERATIONS
+
+models_dir = 'ckpts/entropy_reg_eu/'    
 if __name__ == '__main__':
     optimize()
+
 
 
 

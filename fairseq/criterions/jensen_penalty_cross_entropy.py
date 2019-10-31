@@ -6,17 +6,25 @@ from fairseq import utils
 from . import FairseqCriterion, register_criterion
 import torch.distributions as d
 
-def smoothed_nll_loss(lprobs, target, alpha, beta, dist, ignore_index=None, reduce=True):
+def smoothed_nll_loss(lprobs, target, alpha, beta, dist, ignore_index=None, reduce=True, gen="kl"):
+    if gen == "kl":
+        gen_function = lambda x: torch.log(x).mul(x).sum(dim=-1, keepdim=True)
+    elif gen =="eu":
+        gen_function = lambda x: (x**2).sum(dim=-1, keepdim=True) 
+    else:
+        exit(1)
     if target.dim() == lprobs.dim() - 1:
         target = target.unsqueeze(-1)
+
     nll_loss = -lprobs.gather(dim=-1, index=target)
-    ent_p = torch.exp(lprobs).mul(lprobs).sum(dim=-1, keepdim=True)
-    uni_probs = torch.ones(lprobs.size(), device=lprobs.device) * dist
+    probs = torch.exp(lprobs)
+    dist_p = gen_function(probs) #torch.exp(lprobs).mul(lprobs).sum(dim=-1, keepdim=True)
+    uni_probs = torch.ones(probs.size(), device=probs.device) * dist
     
-    comb = torch.exp(lprobs) * alpha + uni_probs * (1. - alpha)
-    ent_c = torch.log(comb).mul(comb).sum(dim=-1, keepdim=True)
-    divergence = 1./((1.-alpha)*alpha)*(-ent_c + alpha * ent_p) # not including + (1-alpha) * ent_u since its constant
-    assert divergence.sum() >= 0
+    comb = probs * alpha + uni_probs * (1. - alpha)
+    dist_c = gen_function(comb)
+    divergence = 1./((1.-alpha)*alpha)*(-dist_c + alpha * dist_p) # not including + (1-alpha) * dist_u since its constant
+    #assert divergence.sum() + 1./alpha * gen_function(uni_probs).sum() >= 0
 
     if ignore_index is not None:
         non_pad_mask = target.ne(ignore_index)
@@ -40,8 +48,9 @@ class JensonCrossEntropyCriterion(FairseqCriterion):
         self.alpha = args.alpha
         assert self.alpha < 1.0 and self.alpha > 0.
         self.beta = args.beta
+        self.gen = args.generator_function
         tgt_dict = task.target_dictionary
-        if args.use_uni:
+        if args.use_uni or T < 1.:
             self.dist = torch.ones(len(tgt_dict.symbols)) * 1./len(tgt_dict.symbols)
         else:
             unigram_dist = torch.Tensor(tgt_dict.count)
@@ -57,7 +66,7 @@ class JensonCrossEntropyCriterion(FairseqCriterion):
     def add_args(parser):
         """Add criterion-specific arguments to the parser."""
         # fmt: off
-        parser.add_argument('--T', default=1., type=float, metavar='N',
+        parser.add_argument('--T', default=0., type=float, metavar='N',
                             help='unigram distribution annealing factor')
         parser.add_argument('--use-uni', action='store_true',
                             help='use uniform dist instead')
@@ -65,6 +74,8 @@ class JensonCrossEntropyCriterion(FairseqCriterion):
                             help='weight of penalty')
         parser.add_argument('--alpha', default=0.5, type=float, metavar='D',
                             help='alpha parameter for divergence')
+        parser.add_argument('--generator-function', default="kl", choices=['kl', 'eu'],
+                            help='divergence generator function')
         # fmt: on
 
     def forward(self, model, sample, reduce=True):
@@ -76,11 +87,12 @@ class JensonCrossEntropyCriterion(FairseqCriterion):
         3) logging outputs to display while training
         """
         net_output = model(**sample['net_input'])
-        loss, nll_loss = self.compute_loss(model, net_output, sample, reduce=reduce)
+        loss, nll_loss, entropy = self.compute_loss(model, net_output, sample, reduce=reduce)
         sample_size = sample['target'].size(0) if self.args.sentence_avg else sample['ntokens']
         logging_output = {
             'loss': utils.item(loss.data) if reduce else loss.data,
             'nll_loss': utils.item(nll_loss.data) if reduce else nll_loss.data,
+            'entropy': utils.item(entropy.data) if reduce else entropy.data,
             'ntokens': sample['ntokens'],
             'nsentences': sample['target'].size(0),
             'sample_size': sample_size,
@@ -90,11 +102,14 @@ class JensonCrossEntropyCriterion(FairseqCriterion):
     def compute_loss(self, model, net_output, sample, reduce=True):
         lprobs = model.get_normalized_probs(net_output, log_probs=True)
         lprobs = lprobs.view(-1, lprobs.size(-1))
+        entropy = - (lprobs * torch.exp(lprobs)).sum(dim=-1)
+        if reduce:
+            entropy = entropy.sum()
         target = model.get_targets(sample, net_output).view(-1, 1)
         loss, nll_loss = smoothed_nll_loss(
-            lprobs, target, self.alpha, self.beta, self.dist, ignore_index=self.padding_idx, reduce=reduce,
-        )
-        return loss, nll_loss
+            lprobs, target, self.alpha, self.beta, self.dist, ignore_index=self.padding_idx, 
+            reduce=reduce, gen=self.gen)
+        return loss, nll_loss, entropy
 
     @staticmethod
     def aggregate_logging_outputs(logging_outputs):
@@ -105,6 +120,7 @@ class JensonCrossEntropyCriterion(FairseqCriterion):
         return {
             'loss': sum(log.get('loss', 0) for log in logging_outputs) / sample_size / math.log(2) if sample_size > 0 else 0.,
             'nll_loss': sum(log.get('nll_loss', 0) for log in logging_outputs) / ntokens / math.log(2) if ntokens > 0 else 0.,
+            'entropy': sum(log.get('entropy', 0) for log in logging_outputs) / ntokens if ntokens > 0 else 0.,
             'ntokens': ntokens,
             'nsentences': nsentences,
             'sample_size': sample_size,
