@@ -6,25 +6,25 @@ from fairseq import utils
 from . import FairseqCriterion, register_criterion
 import torch.distributions as d
 
-def smoothed_nll_loss(lprobs, target, alpha, beta, dist, ignore_index=None, reduce=True, gen="kl"):
+def smoothed_nll_loss(lprobs, probs, target, alpha, beta, dist, ignore_index=None, reduce=True, gen="kl"):
     if gen == "kl":
-        gen_function = lambda x: torch.log(x).mul(x).sum(dim=-1, keepdim=True)
+        gen_function = lambda x, y: torch.log(x).mul(x).sum(dim=-1, keepdim=True) if y is None else y.mul(x).sum(dim=-1, keepdim=True)
     elif gen =="eu":
-        gen_function = lambda x: (x**2).sum(dim=-1, keepdim=True) 
+        gen_function = lambda x, y: (x**2).sum(dim=-1, keepdim=True) 
     else:
         exit(1)
     if target.dim() == lprobs.dim() - 1:
         target = target.unsqueeze(-1)
 
     nll_loss = -lprobs.gather(dim=-1, index=target)
-    probs = torch.exp(lprobs)
-    dist_p = gen_function(probs) #torch.exp(lprobs).mul(lprobs).sum(dim=-1, keepdim=True)
+    dist_p = gen_function(probs, lprobs) 
     uni_probs = torch.ones(probs.size(), device=probs.device) * dist
     
     comb = probs * alpha + uni_probs * (1. - alpha)
-    dist_c = gen_function(comb)
+    dist_c = gen_function(comb, None)
     divergence = 1./((1.-alpha)*alpha)*(-dist_c + alpha * dist_p) # not including + (1-alpha) * dist_u since its constant
-    #assert divergence.sum() + 1./alpha * gen_function(uni_probs).sum() >= 0
+    #computationally efficient way of checking divergence property
+    assert divergence.sum() >= 0 or divergence.sum() + 1./alpha * gen_function(uni_probs, None).sum() >= 0
 
     if ignore_index is not None:
         non_pad_mask = target.ne(ignore_index)
@@ -101,13 +101,15 @@ class JensonCrossEntropyCriterion(FairseqCriterion):
 
     def compute_loss(self, model, net_output, sample, reduce=True):
         lprobs = model.get_normalized_probs(net_output, log_probs=True)
+        probs = model.get_normalized_probs(net_output, log_probs=False)
         lprobs = lprobs.view(-1, lprobs.size(-1))
-        entropy = - (lprobs * torch.exp(lprobs)).sum(dim=-1)
+        probs = probs.view(-1, probs.size(-1))
+        entropy = - (lprobs * probs).sum(dim=-1)
         if reduce:
             entropy = entropy.sum()
         target = model.get_targets(sample, net_output).view(-1, 1)
         loss, nll_loss = smoothed_nll_loss(
-            lprobs, target, self.alpha, self.beta, self.dist, ignore_index=self.padding_idx, 
+            lprobs, probs, target, self.alpha, self.beta, self.dist, ignore_index=self.padding_idx, 
             reduce=reduce, gen=self.gen)
         return loss, nll_loss, entropy
 
