@@ -78,6 +78,11 @@ class RobertaModel(FairseqLanguageModel):
                             help='number of positional embeddings to learn')
         parser.add_argument('--load-checkpoint-heads', action='store_true',
                             help='(re-)register and load heads when loading checkpoints')
+        # args for "Reducing Transformer Depth on Demand with Structured Dropout" (Fan et al., 2019)
+        parser.add_argument('--encoder-layerdrop', type=float, metavar='D', default=0,
+                            help='LayerDrop probability for encoder')
+        parser.add_argument('--encoder-layers-to-keep', default=None,
+                            help='which layers to *keep* when pruning as a comma-separated list')
 
     @classmethod
     def build_model(cls, args, task):
@@ -141,6 +146,8 @@ class RobertaModel(FairseqLanguageModel):
         return RobertaHubInterface(x['args'], x['task'], x['models'][0])
 
     def upgrade_state_dict_named(self, state_dict, name):
+        super().upgrade_state_dict_named(state_dict, name)
+
         prefix = name + '.' if name != '' else ''
         current_head_names = [] if not hasattr(self, 'classification_heads') else \
             self.classification_heads.keys()
@@ -185,6 +192,53 @@ class RobertaModel(FairseqLanguageModel):
                 if prefix + 'classification_heads.' + k not in state_dict:
                     print('Overwriting', prefix + 'classification_heads.' + k)
                     state_dict[prefix + 'classification_heads.' + k] = v
+
+
+@register_model('xlmr')
+class XLMRModel(RobertaModel):
+    @classmethod
+    def hub_models(cls):
+        return {
+            'xlmr.base.v0': 'http://dl.fbaipublicfiles.com/fairseq/models/xlmr.base.v0.tar.gz',
+            'xlmr.large.v0': 'http://dl.fbaipublicfiles.com/fairseq/models/xlmr.large.v0.tar.gz',
+        }
+
+    @classmethod
+    def from_pretrained(cls, model_name_or_path, checkpoint_file='model.pt', data_name_or_path='.', bpe='sentencepiece', **kwargs):
+        from fairseq import hub_utils
+        x = hub_utils.from_pretrained(
+            model_name_or_path,
+            checkpoint_file,
+            data_name_or_path,
+            archive_map=cls.hub_models(),
+            bpe=bpe,
+            load_checkpoint_heads=True,
+            **kwargs,
+        )
+        return RobertaHubInterface(x['args'], x['task'], x['models'][0])
+
+
+@register_model('camembert')
+class CamembertModel(RobertaModel):
+    @classmethod
+    def hub_models(cls):
+        return {
+            'camembert.v0': 'http://dl.fbaipublicfiles.com/fairseq/models/camembert.v0.tar.gz',
+        }
+
+    @classmethod
+    def from_pretrained(cls, model_name_or_path, checkpoint_file='model.pt', data_name_or_path='.', bpe='sentencepiece', **kwargs):
+        from fairseq import hub_utils
+        x = hub_utils.from_pretrained(
+            model_name_or_path,
+            checkpoint_file,
+            data_name_or_path,
+            archive_map=cls.hub_models(),
+            bpe=bpe,
+            load_checkpoint_heads=True,
+            **kwargs,
+        )
+        return RobertaHubInterface(x['args'], x['task'], x['models'][0])
 
 
 class RobertaLMHead(nn.Module):
@@ -245,6 +299,15 @@ class RobertaEncoder(FairseqDecoder):
     def __init__(self, args, dictionary):
         super().__init__(dictionary)
         self.args = args
+
+        # RoBERTa is a sentence encoder model, so users will intuitively trim
+        # encoder layers. However, the implementation uses the fairseq decoder,
+        # so we fix here.
+        if args.encoder_layers_to_keep:
+            args.encoder_layers = len(args.encoder_layers_to_keep.split(","))
+            args.decoder_layers_to_keep = args.encoder_layers_to_keep
+            args.encoder_layers_to_keep = None
+
         self.sentence_encoder = TransformerSentenceEncoder(
             padding_idx=dictionary.pad(),
             vocab_size=len(dictionary),
@@ -255,6 +318,7 @@ class RobertaEncoder(FairseqDecoder):
             dropout=args.dropout,
             attention_dropout=args.attention_dropout,
             activation_dropout=args.activation_dropout,
+            layerdrop=args.encoder_layerdrop,
             max_seq_len=args.max_positions,
             num_segments=0,
             encoder_normalize_before=True,
@@ -284,7 +348,7 @@ class RobertaEncoder(FairseqDecoder):
                 - a dictionary of additional data, where 'inner_states'
                   is a list of hidden states.
         """
-        x, extra = self.extract_features(src_tokens, return_all_hiddens)
+        x, extra = self.extract_features(src_tokens, return_all_hiddens=return_all_hiddens)
         if not features_only:
             x = self.output_layer(x, masked_tokens=masked_tokens)
         return x, extra
@@ -319,6 +383,8 @@ def base_architecture(args):
     args.attention_dropout = getattr(args, 'attention_dropout', 0.1)
     args.activation_dropout = getattr(args, 'activation_dropout', 0.0)
     args.pooler_dropout = getattr(args, 'pooler_dropout', 0.0)
+    args.encoder_layers_to_keep = getattr(args, 'encoder_layers_to_keep', None)
+    args.encoder_layerdrop = getattr(args, 'encoder_layerdrop', 0.0)
 
 
 @register_model_architecture('roberta', 'roberta_base')

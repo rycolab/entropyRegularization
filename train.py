@@ -19,20 +19,9 @@ from fairseq.data import iterators
 from fairseq.trainer import Trainer
 from fairseq.meters import AverageMeter, StopwatchMeter
 
-fb_pathmgr_registerd = False
-
 
 def main(args, init_distributed=False):
     utils.import_user_module(args)
-
-    try:
-        from fairseq.fb_pathmgr import fb_pathmgr
-        global fb_pathmgr_registerd
-        if not fb_pathmgr_registerd:
-            fb_pathmgr.register()
-            fb_pathmgr_registerd = True
-    except (ModuleNotFoundError, ImportError):
-        pass
 
     assert args.max_tokens is not None or args.max_sentences is not None, \
         'Must specify batch size either with --max-tokens or --max-sentences'
@@ -87,7 +76,12 @@ def main(args, init_distributed=False):
     train_meter = StopwatchMeter()
     train_meter.start()
     valid_subsets = args.valid_subset.split(',')
-    while lr > args.min_lr and epoch_itr.epoch < max_epoch and trainer.get_num_updates() < max_update:
+    while (
+        lr > args.min_lr
+        and (epoch_itr.epoch < max_epoch or (epoch_itr.epoch == max_epoch
+            and epoch_itr._next_epoch_itr is not None))
+        and trainer.get_num_updates() < max_update
+    ):
         # train for one epoch
         train(args, trainer, task, epoch_itr)
 
@@ -158,9 +152,10 @@ def train(args, trainer, task, epoch_itr):
             stats[k] = extra_meters[k].avg
         progress.log(stats, tag='train', step=stats['num_updates'])
 
-        # ignore the first mini-batch in words-per-second calculation
+        # ignore the first mini-batch in words-per-second and updates-per-second calculation
         if i == 0:
             trainer.get_meter('wps').reset()
+            trainer.get_meter('ups').reset()
 
         num_updates = trainer.get_num_updates()
         if (
