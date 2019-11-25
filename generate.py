@@ -91,6 +91,8 @@ def main(args):
     has_target = True
     entropies = []
     token_counts = []
+    log_likelihoods = []
+    sparsity_counts = []
 
     with progress_bar.build_progress_bar(args, itr) as t:
         wps_meter = TimeMeter()
@@ -111,6 +113,8 @@ def main(args):
             if 'avg_ent' in sample:
                 entropies.append(sample['avg_ent'][0])
                 token_counts.append(sample['avg_ent'][1])
+            if 'sparsity_counts' in sample: 
+                sparsity_counts.append(sample['sparsity_counts'])
 
             for i, sample_id in enumerate(sample['id'].tolist()):
                 has_target = sample['target'] is not None
@@ -149,6 +153,8 @@ def main(args):
                         tgt_dict=tgt_dict,
                         remove_bpe=args.remove_bpe,
                     )
+                    if args.score_reference:
+                        log_likelihoods.append(hypo['score'])
 
                     if not args.quiet:
                         print('H-{}\t{}\t{}'.format(sample_id, hypo['score'], hypo_str))
@@ -187,7 +193,13 @@ def main(args):
         num_sentences, gen_timer.n, gen_timer.sum, num_sentences / gen_timer.sum, 1. / gen_timer.avg))
     if has_target:
         print('| Generate {} with beam={}: {}'.format(args.gen_subset, args.beam, scorer.result_string()))
-    print({'bleu': scorer.score(), 'entropy': sum(entropies)/sum(token_counts)})
+    if token_counts:    
+        print({'bleu': scorer.score(), 'entropy': sum(entropies)/sum(token_counts)})
+        if sparsity_counts and args.max_tokens == 8000:
+            print(sum(sparsity_counts).float()/sum(token_counts))
+
+    if log_likelihoods:
+        print((sum(log_likelihoods)/len(log_likelihoods)))
     return scorer
 
 

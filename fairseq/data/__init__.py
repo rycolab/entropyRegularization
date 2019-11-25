@@ -54,6 +54,7 @@ from .iterators import (
 __all__ = [
     'BacktranslationDataset',
     'BaseWrapperDataset',
+    'BertDictionary',
     'ColorizeDataset',
     'ConcatDataset',
     'ConcatSentencesDataset',
@@ -72,6 +73,7 @@ __all__ = [
     'LMContextWindowDataset',
     'LRUCacheDataset',
     'MaskTokensDataset',
+    'MaskedLanguagePairDataset'
     'MMapIndexedDataset',
     'MonolingualDataset',
     'NestedDictionaryDataset',

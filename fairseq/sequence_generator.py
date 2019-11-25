@@ -282,6 +282,7 @@ class SequenceGenerator(object):
         reorder_state = None
         batch_idxs = None
         entropies = []
+        sparsity_counts = []
         token_count = []
         for step in range(max_len + 1):  # one extra step for EOS marker
             # reorder decoder internal states based on the prev choice of beams
@@ -299,6 +300,10 @@ class SequenceGenerator(object):
             entropy = - (lprobs * torch.exp(lprobs)).sum(dim=-1)
             token_count.append(entropy.size(0))
             entropies.append(entropy.sum())
+
+            sparsity_counts.append(lprobs.lt(-15).sum())
+            #print(lprobs.lt(-10).sum())
+            #print(entropy.size(0))
 
             lprobs[:, self.pad] = -math.inf  # never select pad
             lprobs[:, self.unk] -= self.unk_penalty  # apply unk penalty
@@ -517,6 +522,7 @@ class SequenceGenerator(object):
             reorder_state = active_bbsz_idx
         # sort by score descending
         sample['avg_ent'] = sum(entropies), sum(token_count)
+        sample['sparsity_counts'] = sum(sparsity_counts)
         for sent in range(len(finalized)):
             finalized[sent] = sorted(finalized[sent], key=lambda r: r['score'], reverse=True)
         return finalized

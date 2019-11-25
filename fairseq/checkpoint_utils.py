@@ -112,13 +112,16 @@ def load_checkpoint(args, trainer, data_selector=None):
         eval(args.optimizer_overrides),
         reset_meters=args.reset_meters,
     )
+    if extra_state is not None:
+        print(extra_state)
+        extra_state.pop('best', None)
 
     if (
         extra_state is not None
         and 'best' in extra_state
         and not args.reset_optimizer
         and not args.reset_meters
-    ):
+    ):        
         save_checkpoint.best = extra_state['best']
 
     if extra_state is not None and not args.reset_dataloader:

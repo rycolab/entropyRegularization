@@ -74,6 +74,12 @@ def main(args, init_distributed=False):
     # corresponding train iterator
     extra_state, epoch_itr = checkpoint_utils.load_checkpoint(args, trainer)
 
+    if epoch_itr.epoch > 70:
+        print('no training')
+        return
+    if getattr(checkpoint_utils.save_checkpoint, 'best', None):
+        del checkpoint_utils.save_checkpoint.best
+
     # Train until the learning rate gets too small
     max_epoch = args.max_epoch or math.inf
     max_update = args.max_update or math.inf
@@ -120,6 +126,7 @@ def main(args, init_distributed=False):
 def train(args, trainer, task, epoch_itr):
     """Train the model for one epoch."""
     # Update parameters every N batches
+    
     update_freq = args.update_freq[epoch_itr.epoch - 1] \
         if epoch_itr.epoch <= len(args.update_freq) else args.update_freq[-1]
 
@@ -310,7 +317,7 @@ def distributed_main(i, args, start_rank=0):
 def run_generation(ckpt, results, ents):
     gen_parser = options.get_generation_parser()
     args = options.parse_args_and_arch(gen_parser, input_args = [ 'data-bin/iwslt14.tokenized.de-en', 
-        '--gen-subset', 'valid', '--path', ckpt, '--beam', '10','--max-tokens', '4000', 
+        '--gen-subset', 'valid', '--path', ckpt, '--beam', '10','--max-tokens', '1000', '--sacrebleu',
         '--remove-bpe', '--log-format', 'none'])
 
     use_cuda = torch.cuda.is_available() and not args.cpu
@@ -445,14 +452,17 @@ def run_generation(ckpt, results, ents):
     results[ckpt] = scorer.score()
     ents[ckpt] = sum(entropies)/sum(token_counts)
 
-def train_main(alpha, beta, save_path):
+def train_main(alpha, beta,  save_path):
     parser = options.get_training_parser()
-    input_args = ['data-bin/iwslt14.tokenized.de-en','--arch', 
-            'fconv_iwslt_de_en', '--max-tokens', '4000', '--keep-last-epochs', '20',
-            '--save-interval', '2', '--max-epoch', '200', '--patience', '15',
-            '--clip-norm', '0.1', '--dropout', '0.2', '--criterion', 'jensen_cross_entropy',
-            '--lr-scheduler', 'fixed', '--min-lr', '1e-8', '--lr', '0.5', '--alpha', str(alpha),
-            '--beta', str(beta), '--use-uni', '--save-dir', save_path]
+    input_args = ['data-bin/iwslt14.tokenized.de-en',
+            '--share-decoder-input-output-embed',
+            '--arch','transformer_iwslt_de_en', '--max-tokens', '4000', '--lr', '5e-4',
+            '--save-interval', '2', '--max-epoch', '85', '--patience', '10',
+            '--optimizer', 'adam', '--adam-betas', '(0.9, 0.98)',
+            '--clip-norm', '0.0', '--weight-decay', '0.0001', '--dropout', '0.3', '--criterion', 'jensen_cross_entropy',
+            '--lr-scheduler', 'inverse_sqrt',  '--warmup-updates', '4000',
+            '--keep-last-epochs', '4', '--criterion', 'jensen_cross_entropy', '--alpha', str(alpha),
+            '--beta', str(beta), '--use-uni', '--fp16', '--save-dir', save_path]
     
     args = options.parse_args_and_arch(parser, input_args=input_args)
     if args.distributed_init_method is None:
@@ -493,8 +503,8 @@ def train_main(alpha, beta, save_path):
     except ValueError:
         print("no checkpoint_last.pt in folder", args.save_dir)
     #assert len(ckpts) <= 8
-
-    f = open(os.path.join(args.save_dir,"final_entropies.txt"), "a+")
+         
+    f  =open(os.path.join(args.save_dir,"final_entropies_s_new.txt"), "a+")
     results = {}
     entropies = {}
     for ckpt in ckpts:
@@ -502,7 +512,9 @@ def train_main(alpha, beta, save_path):
             path = os.path.join(args.save_dir, ckpt)
             f.write(path + '\n')
             run_generation(path, results, entropies)
+          
             f.write('{entropy: '+  str(entropies[path]) + ', bleu: '+  str(results[path]) +'}\n')
+         
     f.close()
     return results
 
@@ -513,9 +525,10 @@ def objective(alpha, beta):
     save_path = os.path.join(models_dir, str(round(alpha,3)).replace('.', '') + '_' + str(round(beta,3)).replace('.', ''))
     if not os.path.exists(save_path):
         os.mkdir(save_path)
-
+    # elif len(os.listdir(save_path)) >= 10:
+    #     return
     #T = math.exp(log_t)
-    val_scores = train_main( alpha,beta, save_path)
+    val_scores = train_main(alpha, beta,  save_path)
 
     print(max(val_scores.values()))
 
@@ -524,12 +537,12 @@ def objective(alpha, beta):
 def optimize():
     global ITERATIONS
     ITERATIONS = 1
-    MAX_EVALS = 30
+    MAX_EVALS = 10
 
     from bayes_opt import BayesianOptimization
 
     # Bounded region of parameter space
-    pbounds = {'alpha': (0.001, 0.999), 'beta': (0., 2.0)}
+    pbounds = {'alpha': (0.001, 0.999), 'beta': (0.001, 2.5)}
 
     optimizer = BayesianOptimization(
         f=objective,
@@ -553,17 +566,16 @@ def optimize():
 
     # Results will be saved in ./logs.json
     optimizer.maximize(
-        init_points=7,#max(0, 5 - len(optimizer.res)),
+        init_points=20,#max(0, 5 - len(optimizer.res)),
         n_iter=MAX_EVALS,
     )
     print(optimizer.max)
 
 global ITERATIONS
 
-models_dir = 'ckpts/entropy_reg_eu/'    
+models_dir = 'ckpts/de_en_r/'    
 if __name__ == '__main__':
-    optimize()
+    objective(0.5, 0.0)
 
-
-
+    
 

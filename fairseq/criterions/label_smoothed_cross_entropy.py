@@ -43,6 +43,7 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         super().__init__(args, task)
         self.eps = args.label_smoothing
         tgt_dict = task.target_dictionary
+        self.use_uni_dist = False
         if args.T >= 1:
             self.use_uni_dist = True
             self.unigram_dist = torch.Tensor(tgt_dict.count)
