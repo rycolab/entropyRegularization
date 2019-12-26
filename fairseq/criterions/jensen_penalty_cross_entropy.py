@@ -24,11 +24,8 @@ def smoothed_nll_loss(lprobs, probs, target, alpha, beta, dist, ignore_index=Non
     dist_c = gen_function(comb, None)
     divergence = 1./((1.-alpha)*alpha)*(-dist_c + alpha * dist_p) # not including + (1-alpha) * dist_u since its constant
     #computationally efficient way of checking divergence property
-    if divergence.sum() < 0 and divergence.sum() + 1./alpha * gen_function(uni_probs, None).sum() < 0:
-        print("divergence less than 0")
-        print(divergence)
-        print(divergence.sum())
-
+    assert divergence.sum() >= 0 or divergence.sum() + 1./alpha * gen_function(uni_probs, None).sum() >= 0:
+        
     if ignore_index is not None:
         non_pad_mask = target.ne(ignore_index)
         nll_loss = nll_loss[non_pad_mask]
@@ -53,15 +50,17 @@ class JensonCrossEntropyCriterion(FairseqCriterion):
         self.beta = args.beta
         self.gen = args.generator_function
         tgt_dict = task.target_dictionary
-        if args.use_uni or T < 1.:
+        if args.use_uniform or T < 1.:
             self.dist = torch.ones(len(tgt_dict.symbols)) * 1./len(tgt_dict.symbols)
         else:
             unigram_dist = torch.Tensor(tgt_dict.count)
+            #change frequency of eos to frequency of '.' so it's more realistic.
             unigram_dist[tgt_dict.eos_index] = unigram_dist[tgt_dict.index('.')]
             unigram_dist = unigram_dist.pow(1./args.T)
             unigram_dist = unigram_dist/unigram_dist.sum()
             assert not (unigram_dist == 0).any()
             self.dist = unigram_dist
+        
         if torch.cuda.is_available() and not args.cpu:
             self.dist = self.dist.cuda()
 
@@ -71,12 +70,12 @@ class JensonCrossEntropyCriterion(FairseqCriterion):
         # fmt: off
         parser.add_argument('--T', default=0., type=float, metavar='N',
                             help='unigram distribution annealing factor')
-        parser.add_argument('--use-uni', action='store_true',
+        parser.add_argument('--use-uniform', action='store_true',
                             help='use uniform dist instead')
         parser.add_argument('--beta', default=0., type=float, metavar='D',
                             help='weight of penalty')
         parser.add_argument('--alpha', default=0.5, type=float, metavar='D',
-                            help='alpha parameter for divergence')
+                            help='alpha parameter for divergence; must be < 1 and > 0')
         parser.add_argument('--generator-function', default="kl", choices=['kl', 'eu'],
                             help='divergence generator function')
         # fmt: on

@@ -13,6 +13,7 @@ from fairseq.data import (
     PrependTokenDataset,
     StripTokenDataset,
     TokenBlockDataset,
+    LanguagePairDataset
 )
 
 from fairseq.data.encoders.utils import get_whole_word_mask
@@ -102,6 +103,9 @@ class DenoisingTask(FairseqTask):
             args.shuffle_instance = False
         return cls(args, dictionary)
 
+    def build_dataset_for_inference(self, src_tokens, src_lengths):
+        return LanguagePairDataset(src_tokens, src_lengths, self.source_dictionary)
+        
     def load_dataset(self, split, epoch=0, combine=False, **kwargs):
         """Load a given dataset split.
 

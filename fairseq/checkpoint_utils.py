@@ -1,3 +1,4 @@
+
 # Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
@@ -117,9 +118,6 @@ def load_checkpoint(args, trainer, **passthrough_args):
         eval(args.optimizer_overrides),
         reset_meters=args.reset_meters,
     )
-    if extra_state is not None:
-        print(extra_state)
-        extra_state.pop('best', None)
 
     if (
         extra_state is not None

@@ -99,8 +99,8 @@ class BARTHubInterface(nn.Module):
 
     def sample(self, sentences: List[str], beam: int = 1, verbose: bool = False, **kwargs) -> str:
         input = [self.encode(sentence) for sentence in sentences]
-        hypos = self.generate(input, beam, verbose, **kwargs)
-        return [self.decode(x['tokens']) for x in hypos]
+        hypos, ents = self.generate(input, beam, verbose, **kwargs)
+        return [self.decode(x['tokens']) for x in hypos], ents
 
     def generate(self, tokens: List[torch.LongTensor], beam: int = 5, verbose: bool = False, **kwargs) -> torch.LongTensor:
         sample = self._build_sample(tokens)
@@ -117,7 +117,6 @@ class BARTHubInterface(nn.Module):
             sample,
             prefix_tokens=sample['net_input']['src_tokens'].new_zeros((len(tokens), 1)).fill_(self.task.source_dictionary.bos()),
         )
-
         if verbose:
             src_str_with_unk = self.string(tokens)
             print('S\t{}'.format(src_str_with_unk))
@@ -128,7 +127,7 @@ class BARTHubInterface(nn.Module):
         # Process top predictions
         hypos = [x[0] for x in translations]
         hypos = [v for _, v in sorted(zip(sample['id'].tolist(), hypos))]
-        return hypos
+        return hypos, sample['avg_ent']
 
     def extract_features(self, tokens: torch.LongTensor, return_all_hiddens: bool = False) -> torch.Tensor:
         if tokens.dim() == 1:

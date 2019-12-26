@@ -28,7 +28,7 @@ from .nested_dictionary_dataset import NestedDictionaryDataset
 from .noising import NoisingDataset
 from .numel_dataset import NumelDataset
 from .num_samples_dataset import NumSamplesDataset
-from .offset_tokens_dataset import OffsetTokensDataset
+from .offset_tokens_dataset import OffsetTokensDatasetq
 from .pad_dataset import LeftPadDataset, PadDataset, RightPadDataset
 from .prepend_dataset import PrependDataset
 from .prepend_token_dataset import PrependTokenDataset
@@ -57,7 +57,6 @@ __all__ = [
     'AppendTokenDataset',
     'BacktranslationDataset',
     'BaseWrapperDataset',
-    'BertDictionary',
     'ColorizeDataset',
     'ConcatDataset',
     'ConcatSentencesDataset',
@@ -78,7 +77,6 @@ __all__ = [
     'LMContextWindowDataset',
     'LRUCacheDataset',
     'MaskTokensDataset',
-    'MaskedLanguagePairDataset'
     'MMapIndexedDataset',
     'MonolingualDataset',
     'NestedDictionaryDataset',

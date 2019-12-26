@@ -203,12 +203,12 @@ def main(args):
     if has_target:
         print('| Generate {} with beam={}: {}'.format(args.gen_subset, args.beam, scorer.result_string()))
     if token_counts:    
-        print({'bleu': scorer.score(), 'entropy': sum(entropies)/sum(token_counts)})
-        if sparsity_counts and args.max_tokens == 8000:
-            print(sum(sparsity_counts).float()/sum(token_counts))
+        print("BLEU", scorer.score(), '\tAverage entropy': sum(entropies)/sum(token_counts))
+        if sparsity_counts:
+            print("Average number of sparse labels:", sum(sparsity_counts).float()/sum(token_counts))
 
     if log_likelihoods:
-        print((sum(log_likelihoods)/len(log_likelihoods)))
+        print("Average log likelihood of reference sequence:",sum(log_likelihoods)/len(log_likelihoods))
     return scorer
 
 

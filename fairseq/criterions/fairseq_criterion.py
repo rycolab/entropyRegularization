@@ -42,7 +42,3 @@ class FairseqCriterion(_Loss):
     def grad_denom(sample_sizes):
         """Compute the gradient denominator for a set of sample sizes."""
         return sum(sample_sizes)
-
-
-class FairseqSequenceCriterion(FairseqCriterion):
-    pass
