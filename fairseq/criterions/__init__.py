@@ -7,7 +7,7 @@ import importlib
 import os
 
 from fairseq import registry
-from fairseq.criterions.fairseq_criterion import FairseqCriterion, FairseqSequenceCriterion
+from fairseq.criterions.fairseq_criterion import FairseqCriterion
 
 build_criterion, register_criterion, CRITERION_REGISTRY = registry.setup_registry(
     '--criterion',

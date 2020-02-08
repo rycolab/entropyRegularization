@@ -23,10 +23,9 @@ class Binarizer:
 
     @staticmethod
     def binarize(filename, dict, consumer, tokenize=tokenize_line, append_eos=True, reverse_order=False,
-                 offset=0, end=-1):
+                 offset=0, end=-1, empty=False):
         nseq, ntok = 0, 0
         replaced = Counter()
-
         def replaced_consumer(word, idx):
             if idx == dict.unk_index and word != dict.unk_word:
                 replaced.update([word])
@@ -39,7 +38,7 @@ class Binarizer:
                 if end > 0 and f.tell() > end:
                     break
                 ids = dict.encode_line(
-                        line=line,
+                        line=line if not empty else "",
                         line_tokenizer=tokenize,
                         add_if_not_exist=False,
                         consumer=replaced_consumer,
