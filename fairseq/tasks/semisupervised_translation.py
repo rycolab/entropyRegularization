@@ -4,10 +4,13 @@
 # LICENSE file in the root directory of this source tree.
 
 from collections import OrderedDict
+import logging
 import os
 
 from fairseq.data import (
     BacktranslationDataset,
+    data_utils,
+    indexed_dataset,
     IndexedCachedDataset,
     IndexedDataset,
     IndexedRawTextDataset,
@@ -18,9 +21,11 @@ from fairseq.data import (
 from fairseq.models import FairseqMultiModel
 from fairseq.sequence_generator import SequenceGenerator
 
-
 from .multilingual_translation import MultilingualTranslationTask
 from . import register_task
+
+
+logger = logging.getLogger(__name__)
 
 
 def _get_bt_dataset_key(lang_pair):
@@ -45,7 +50,7 @@ def parse_lambda_config(x):
     if len(split) == 1:
         return float(x), None
     else:
-        split = [s.split(':') for s in split]
+        split = [s.split(os.pathsep) for s in split]
         assert all(len(s) == 2 for s in split)
         assert all(k.isdigit() for k, _ in split)
         assert all(int(split[i][0]) < int(split[i + 1][0]) for i in range(len(split) - 1))
@@ -134,7 +139,7 @@ class SemisupervisedTranslationTask(MultilingualTranslationTask):
     def load_dataset(self, split, epoch=0, **kwargs):
         """Load a dataset split."""
 
-        paths = self.args.data.split(':')
+        paths = self.args.data.split(os.pathsep)
         assert len(paths) > 0
         data_path = paths[epoch % len(paths)]
 
@@ -143,21 +148,10 @@ class SemisupervisedTranslationTask(MultilingualTranslationTask):
                 filename = os.path.join(data_path, '{}.{}-{}.{}'.format(split, src, tgt, lang))
             else:
                 filename = os.path.join(data_path, '{}.{}-None.{}'.format(split, src, tgt))
-            if self.args.raw_text and IndexedRawTextDataset.exists(filename):
-                return True
-            elif not self.args.raw_text and IndexedDataset.exists(filename):
-                return True
-            return False
+            return indexed_dataset.dataset_exists(filename, impl=self.args.dataset_impl)
 
-        def indexed_dataset(path, dictionary):
-            if self.args.raw_text:
-                return IndexedRawTextDataset(path, dictionary)
-            elif IndexedDataset.exists(path):
-                if self.args.lazy_load:
-                    return IndexedDataset(path, fix_lua_indexing=True)
-                else:
-                    return IndexedCachedDataset(path, fix_lua_indexing=True)
-            return None
+        def load_indexed_dataset(path, dictionary):
+            return data_utils.load_indexed_dataset(path, dictionary, self.args.dataset_impl)
 
         # load parallel datasets
         src_datasets, tgt_datasets = {}, {}
@@ -170,9 +164,9 @@ class SemisupervisedTranslationTask(MultilingualTranslationTask):
                     prefix = os.path.join(data_path, '{}.{}-{}.'.format(split, tgt, src))
                 else:
                     continue
-                src_datasets[lang_pair] = indexed_dataset(prefix + src, self.dicts[src])
-                tgt_datasets[lang_pair] = indexed_dataset(prefix + tgt, self.dicts[tgt])
-                print('| parallel-{} {} {} examples'.format(data_path, split, len(src_datasets[lang_pair])))
+                src_datasets[lang_pair] = load_indexed_dataset(prefix + src, self.dicts[src])
+                tgt_datasets[lang_pair] = load_indexed_dataset(prefix + tgt, self.dicts[tgt])
+                logger.info('parallel-{} {} {} examples'.format(data_path, split, len(src_datasets[lang_pair])))
             if len(src_datasets) == 0:
                 raise FileNotFoundError('Dataset not found: {} ({})'.format(split, data_path))
 
@@ -184,7 +178,7 @@ class SemisupervisedTranslationTask(MultilingualTranslationTask):
                 if not split_exists(split, tgt, None, tgt):
                     raise FileNotFoundError('Dataset not found: backtranslation {} ({})'.format(split, data_path))
                 filename = os.path.join(data_path, '{}.{}-None.{}'.format(split, tgt, tgt))
-                dataset = indexed_dataset(filename, self.dicts[tgt])
+                dataset = load_indexed_dataset(filename, self.dicts[tgt])
                 lang_pair_dataset_tgt = LanguagePairDataset(
                     dataset,
                     dataset.sizes,
@@ -219,7 +213,7 @@ class SemisupervisedTranslationTask(MultilingualTranslationTask):
                         tgt_lang=tgt,
                     ).collater,
                 )
-                print('| backtranslate-{}: {} {} {} examples'.format(
+                logger.info('backtranslate-{}: {} {} {} examples'.format(
                     tgt, data_path, split, len(backtranslate_datasets[lang_pair]),
                 ))
                 self.backtranslate_datasets[lang_pair] = backtranslate_datasets[lang_pair]
@@ -232,8 +226,8 @@ class SemisupervisedTranslationTask(MultilingualTranslationTask):
                 if not split_exists(split, tgt, None, tgt):
                     continue
                 filename = os.path.join(data_path, '{}.{}-None.{}'.format(split, tgt, tgt))
-                tgt_dataset1 = indexed_dataset(filename, self.dicts[tgt])
-                tgt_dataset2 = indexed_dataset(filename, self.dicts[tgt])
+                tgt_dataset1 = load_indexed_dataset(filename, self.dicts[tgt])
+                tgt_dataset2 = load_indexed_dataset(filename, self.dicts[tgt])
                 noising_dataset = NoisingDataset(
                     tgt_dataset1,
                     self.dicts[tgt],
@@ -258,7 +252,7 @@ class SemisupervisedTranslationTask(MultilingualTranslationTask):
                     tgt_eos=self.dicts[tgt].eos(),
                     tgt_lang=tgt,
                 )
-                print('| denoising-{}: {} {} {} examples'.format(
+                logger.info('denoising-{}: {} {} {} examples'.format(
                     tgt, data_path, split, len(noising_datasets[lang_pair]),
                 ))
 

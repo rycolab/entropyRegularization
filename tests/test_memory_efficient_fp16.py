@@ -4,6 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import argparse
+import logging
 import unittest
 
 import torch
@@ -12,7 +13,14 @@ from fairseq.optim.adam import FairseqAdam
 from fairseq.optim.fp16_optimizer import MemoryEfficientFP16Optimizer
 
 
+@unittest.skipIf(not torch.cuda.is_available(), 'test requires a GPU')
 class TestMemoryEfficientFP16(unittest.TestCase):
+
+    def setUp(self):
+        logging.disable(logging.CRITICAL)
+
+    def tearDown(self):
+        logging.disable(logging.NOTSET)
 
     def test_load_state_dict(self):
         # define simple FP16 model
@@ -35,6 +43,7 @@ class TestMemoryEfficientFP16(unittest.TestCase):
                 fp16_scale_window=1,
                 fp16_scale_tolerance=1,
                 threshold_loss_scale=1,
+                min_loss_scale=1e-4,
             ),
             params,
             optimizer,

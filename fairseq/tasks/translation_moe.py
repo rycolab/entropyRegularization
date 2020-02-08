@@ -5,7 +5,7 @@
 
 import torch
 
-from fairseq import modules, utils
+from fairseq import metrics, modules, utils
 from fairseq.tasks import register_task
 from fairseq.tasks.translation import TranslationTask
 
@@ -121,13 +121,19 @@ class TranslationMoETask(TranslationTask):
         bsz = sample['target'].size(0)
 
         def get_lprob_y(encoder_out, prev_output_tokens_k):
-            net_output = model.decoder(prev_output_tokens_k, encoder_out)
+            net_output = model.decoder(
+                prev_output_tokens=prev_output_tokens_k,
+                encoder_out=encoder_out,
+            )
             loss, _ = criterion.compute_loss(model, net_output, sample, reduce=False)
             loss = loss.view(bsz, -1)
             return -loss.sum(dim=1, keepdim=True)  # -> B x 1
 
         def get_lprob_yz(winners=None):
-            encoder_out = model.encoder(sample['net_input']['src_tokens'], sample['net_input']['src_lengths'])
+            encoder_out = model.encoder(
+                src_tokens=sample['net_input']['src_tokens'],
+                src_lengths=sample['net_input']['src_lengths'],
+            )
 
             if winners is None:
                 lprob_y = []
@@ -172,6 +178,7 @@ class TranslationMoETask(TranslationTask):
         logging_output = {
             'loss': utils.item(loss.data),
             'ntokens': sample['ntokens'],
+            'nsentences': bsz,
             'sample_size': sample_size,
             'posterior': prob_z_xy.float().sum(dim=0).cpu(),
         }
@@ -201,9 +208,9 @@ class TranslationMoETask(TranslationTask):
                 bos_token=self.expert_index(expert),
             )
 
-    def aggregate_logging_outputs(self, logging_outputs, criterion):
-        agg_logging_outputs = criterion.__class__.aggregate_logging_outputs(logging_outputs)
-        agg_logging_outputs['posterior'] = sum(
-            log['posterior'] for log in logging_outputs if 'posterior' in log
+    def reduce_metrics(self, logging_outputs, criterion):
+        super().reduce_metrics(logging_outputs, criterion)
+        metrics.log_scalar(
+            'posterior',
+            sum(log['posterior'] for log in logging_outputs if 'posterior' in log)
         )
-        return agg_logging_outputs

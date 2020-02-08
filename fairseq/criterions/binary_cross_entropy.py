@@ -4,12 +4,13 @@
 # LICENSE file in the root directory of this source tree.
 
 import math
+
+import numpy as np
 import torch
 import torch.nn.functional as F
 
 from fairseq import utils
-
-from . import FairseqCriterion, register_criterion
+from fairseq.criterions import FairseqCriterion, register_criterion
 
 
 @register_criterion('binary_cross_entropy')
@@ -18,7 +19,7 @@ class BinaryCrossEntropyCriterion(FairseqCriterion):
     def __init__(self, args, task):
         super().__init__(args, task)
 
-    def forward(self, model, sample, reduce=True):
+    def forward(self, model, sample, reduce=True, log_pred=False):
         """Compute the loss for the given sample.
 
         Returns a tuple with three elements:
@@ -28,7 +29,7 @@ class BinaryCrossEntropyCriterion(FairseqCriterion):
         """
         net_output = model(**sample['net_input'])
         logits = model.get_logits(net_output).float()
-        target = model.get_targets(sample, net_output, expand_steps=False).float()
+        target = model.get_targets(sample, net_output).float()
 
         if hasattr(model, 'get_target_weights'):
             weights = model.get_target_weights(target, net_output)
@@ -51,6 +52,9 @@ class BinaryCrossEntropyCriterion(FairseqCriterion):
             'nsentences': logits.size(0),
             'sample_size': sample_size,
         }
+        if log_pred:
+            logging_output['logits'] = logits.cpu().numpy()
+            logging_output['target'] = target.cpu().numpy()
         return loss, sample_size, logging_output
 
     @staticmethod

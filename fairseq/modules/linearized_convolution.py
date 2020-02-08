@@ -7,10 +7,11 @@ import torch
 import torch.nn.functional as F
 
 from fairseq import utils
-
 from .conv_tbc import ConvTBC
+from fairseq.incremental_decoding_utils import with_incremental_state
 
 
+@with_incremental_state
 class LinearizedConvolution(ConvTBC):
     """An optimized version of nn.Conv1d.
 
@@ -80,7 +81,7 @@ class LinearizedConvolution(ConvTBC):
             kw = self.kernel_size[0]
             weight = self.weight.transpose(2, 1).transpose(1, 0).contiguous()
             assert weight.size() == (self.out_channels, kw, self.in_channels)
-            self._linearized_weight = weight.view(self.out_channels, -1)
+            self._linearized_weight = torch.nn.Parameter(weight.view(self.out_channels, -1))
         return self._linearized_weight
 
     def _clear_linearized_weight(self, *args):

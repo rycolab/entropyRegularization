@@ -1,10 +1,16 @@
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
+
 import argparse
+from multiprocessing import Manager
 import random
 import unittest
-from multiprocessing import Manager
 
 import torch
 import torch.nn as nn
+
 from fairseq import distributed_utils, optim
 
 
@@ -99,6 +105,7 @@ def setup_args():
     return args
 
 
+@unittest.skipIf(torch.cuda.device_count() < 2, "test requires 2 GPUs")
 class TestBMUF(unittest.TestCase):
     def bmuf_process(self, args, iterations):
         processes = []
@@ -143,3 +150,7 @@ class TestBMUF(unittest.TestCase):
     def assertAlmostEqual(self, t1, t2):
         self.assertEqual(t1.size(), t2.size(), "size mismatch")
         self.assertLess((t1 - t2).abs().max(), 1e-4)
+
+
+if __name__ == '__main__':
+    unittest.main()

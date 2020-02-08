@@ -3,9 +3,11 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+import logging
 import os
 import pickle
 import socket
+import struct
 import subprocess
 import warnings
 
@@ -13,6 +15,9 @@ import torch
 import torch.distributed as dist
 
 from fairseq import utils
+
+
+logger = logging.getLogger(__name__)
 
 
 def is_master(args):
@@ -75,16 +80,18 @@ def distributed_init(args):
     if torch.distributed.is_initialized():
         warnings.warn('Distributed is already initialized, cannot initialize twice!')
     else:
-        print('| distributed init (rank {}): {}'.format(
-            args.distributed_rank, args.distributed_init_method), flush=True)
+        logger.info('distributed init (rank {}): {}'.format(
+            args.distributed_rank, args.distributed_init_method,
+        ))
         dist.init_process_group(
             backend=args.distributed_backend,
             init_method=args.distributed_init_method,
             world_size=args.distributed_world_size,
             rank=args.distributed_rank,
         )
-        print('| initialized host {} as rank {}'.format(
-            socket.gethostname(), args.distributed_rank), flush=True)
+        logger.info('initialized host {} as rank {}'.format(
+            socket.gethostname(), args.distributed_rank,
+        ))
 
         # perform a dummy all-reduce to initialize the NCCL communicator
         if torch.cuda.is_available():
@@ -92,23 +99,13 @@ def distributed_init(args):
         else:
             dist.all_reduce(torch.zeros(1))
 
-        suppress_output(is_master(args))
+        if is_master(args):
+            logging.getLogger().setLevel(logging.INFO)
+        else:
+            logging.getLogger().setLevel(logging.WARNING)
 
     args.distributed_rank = torch.distributed.get_rank()
     return args.distributed_rank
-
-
-def suppress_output(is_master):
-    """Suppress printing on the current device. Force printing with `force=True`."""
-    import builtins as __builtin__
-    builtin_print = __builtin__.print
-
-    def print(*args, **kwargs):
-        force = kwargs.pop('force', False)
-        if is_master or force:
-            builtin_print(*args, **kwargs)
-
-    __builtin__.print = print
 
 
 def get_rank():
@@ -155,26 +152,26 @@ def all_gather_list(data, group=None, max_size=16384):
 
     enc = pickle.dumps(data)
     enc_size = len(enc)
-    if enc_size + 2 > max_size:
-        raise ValueError('encoded data exceeds max_size: {}'.format(enc_size + 2))
-    assert max_size < 255*256
+    header_size = 4  # size of header that contains the length of the encoded data
+    size = header_size + enc_size
+    if size > max_size:
+        raise ValueError('encoded data size ({}) exceeds max_size ({})'.format(size, max_size))
 
-    cpu_buffer[0] = enc_size // 255  # this encoding works for max_size < 65k
-    cpu_buffer[1] = enc_size % 255
-    cpu_buffer[2 : enc_size + 2] = torch.ByteTensor(list(enc))
+    header = struct.pack(">I", enc_size)
+    cpu_buffer[:size] = torch.ByteTensor(list(header + enc))
     start = rank * max_size
-    size = enc_size + 2
-    buffer[start : start + size].copy_(cpu_buffer[:size])
+    buffer[start:start + size].copy_(cpu_buffer[:size])
 
     all_reduce(buffer, group=group)
 
+    buffer = buffer.cpu()
     try:
         result = []
         for i in range(world_size):
-            out_buffer = buffer[i * max_size : (i + 1) * max_size]
-            size = (255 * utils.item(out_buffer[0])) + utils.item(out_buffer[1])
-            if size > 0:
-                result.append(pickle.loads(bytes(out_buffer[2 : size + 2].tolist())))
+            out_buffer = buffer[i * max_size:(i + 1) * max_size]
+            enc_size, = struct.unpack(">I", bytes(out_buffer[:header_size].tolist()))
+            if enc_size > 0:
+                result.append(pickle.loads(bytes(out_buffer[header_size:header_size + enc_size].tolist())))
         return result
     except pickle.UnpicklingError:
         raise Exception(
@@ -183,5 +180,6 @@ def all_gather_list(data, group=None, max_size=16384):
             'that the workers have fallen out of sync somehow. Workers can fall out of '
             'sync if one of them runs out of memory, or if there are other conditions '
             'in your training script that can cause one worker to finish an epoch '
-            'while other workers are still iterating over their portions of the data.'
+            'while other workers are still iterating over their portions of the data. '
+            'Try rerunning with --ddp-backend=no_c10d and see if that helps.'
         )

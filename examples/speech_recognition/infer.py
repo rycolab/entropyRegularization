@@ -63,8 +63,8 @@ def check_args(args):
         not args.sampling or args.nbest == args.beam
     ), "--sampling requires --nbest to be equal to --beam"
     assert (
-        args.replace_unk is None or args.raw_text
-    ), "--replace-unk requires a raw text dataset (--raw-text)"
+        args.replace_unk is None or args.dataset_impl == "raw"
+    ), "--replace-unk requires a raw text dataset (--dataset-impl=raw)"
 
 
 def get_dataset_itr(args, task):
@@ -186,7 +186,7 @@ def main(args):
     # Load ensemble
     logger.info("| loading model(s) from {}".format(args.path))
     models, criterions, _model_args = load_models_and_criterions(
-        args.path.split(":"),
+        args.path.split(os.pathsep),
         arg_overrides=eval(args.model_overrides),  # noqa
         task=task,
     )

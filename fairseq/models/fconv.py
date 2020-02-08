@@ -4,6 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -43,10 +44,18 @@ class FConvModel(FairseqEncoderDecoderModel):
 
     @classmethod
     def hub_models(cls):
+
+        def moses_subword(path):
+            return {
+                'path': path,
+                'tokenizer': 'moses',
+                'bpe': 'subword_nmt',
+            }
+
         return {
-            'conv.wmt14.en-fr': 'https://dl.fbaipublicfiles.com/fairseq/models/wmt14.v2.en-fr.fconv-py.tar.bz2',
-            'conv.wmt14.en-de': 'https://dl.fbaipublicfiles.com/fairseq/models/wmt14.en-de.fconv-py.tar.bz2',
-            'conv.wmt17.en-de': 'https://dl.fbaipublicfiles.com/fairseq/models/wmt17.v2.en-de.fconv-py.tar.bz2',
+            'conv.wmt14.en-fr': moses_subword('https://dl.fbaipublicfiles.com/fairseq/models/wmt14.v2.en-fr.fconv-py.tar.bz2'),
+            'conv.wmt14.en-de': moses_subword('https://dl.fbaipublicfiles.com/fairseq/models/wmt14.en-de.fconv-py.tar.bz2'),
+            'conv.wmt17.en-de': moses_subword('https://dl.fbaipublicfiles.com/fairseq/models/wmt17.v2.en-de.fconv-py.tar.bz2'),
         }
 
     def __init__(self, encoder, decoder):
@@ -280,7 +289,7 @@ class FConvEncoder(FairseqEncoder):
 
     def max_positions(self):
         """Maximum input length supported by the encoder."""
-        return self.embed_positions.max_positions()
+        return self.embed_positions.max_positions
 
 
 class AttentionLayer(nn.Module):
@@ -496,7 +505,7 @@ class FConvDecoder(FairseqIncrementalDecoder):
 
     def max_positions(self):
         """Maximum output length supported by the decoder."""
-        return self.embed_positions.max_positions() if self.embed_positions is not None else float('inf')
+        return self.embed_positions.max_positions if self.embed_positions is not None else float('inf')
 
     def upgrade_state_dict(self, state_dict):
         if utils.item(state_dict.get('decoder.version', torch.Tensor([1]))[0]) < 2:

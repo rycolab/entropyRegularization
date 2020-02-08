@@ -3,6 +3,7 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+import logging
 import os
 
 import numpy as np
@@ -24,8 +25,10 @@ from fairseq.data import (
     StripTokenDataset,
     TruncateDataset,
 )
+from fairseq.tasks import FairseqTask, register_task
 
-from . import FairseqTask, register_task
+
+logger = logging.getLogger(__name__)
 
 
 @register_task('sentence_prediction')
@@ -51,9 +54,9 @@ class SentencePredictionTask(FairseqTask):
         parser.add_argument('--regression-target', action='store_true', default=False)
         parser.add_argument('--no-shuffle', action='store_true', default=False)
         parser.add_argument('--truncate-sequence', action='store_true', default=False,
-                            help='Truncate sequence to max_sequence_length')
+                            help='truncate sequence to max-positions')
         parser.add_argument('--add-prev-output-tokens', action='store_true', default=False,
-                            help='Add prev_output_tokens to sample, used for encoder-decoder arch')
+                            help='add prev_output_tokens to sample, used for encoder-decoder arch')
 
     def __init__(self, args, data_dictionary, label_dictionary):
         super().__init__(args)
@@ -89,7 +92,7 @@ class SentencePredictionTask(FairseqTask):
             os.path.join(args.data, 'input0', 'dict.txt'),
             source=True,
         )
-        print('| [input] dictionary: {} types'.format(len(data_dict)))
+        logger.info('[input] dictionary: {} types'.format(len(data_dict)))
 
         label_dict = None
         if not args.regression_target:
@@ -99,7 +102,7 @@ class SentencePredictionTask(FairseqTask):
                 os.path.join(args.data, 'label', 'dict.txt'),
                 source=False,
             )
-            print('| [label] dictionary: {} types'.format(len(label_dict)))
+            logger.info('[label] dictionary: {} types'.format(len(label_dict)))
         else:
             label_dict = data_dict
         return SentencePredictionTask(args, data_dict, label_dict)
@@ -114,7 +117,7 @@ class SentencePredictionTask(FairseqTask):
 
             dataset = data_utils.load_indexed_dataset(
                 split_path,
-                self.source_dictionary,
+                dictionary,
                 self.args.dataset_impl,
                 combine=combine,
             )
@@ -164,15 +167,15 @@ class SentencePredictionTask(FairseqTask):
             )
 
         if not self.args.regression_target:
-            label_dataset = make_dataset('label', self.target_dictionary)
+            label_dataset = make_dataset('label', self.label_dictionary)
             if label_dataset is not None:
                 dataset.update(
                     target=OffsetTokensDataset(
                         StripTokenDataset(
                             label_dataset,
-                            id_to_strip=self.target_dictionary.eos(),
+                            id_to_strip=self.label_dictionary.eos(),
                         ),
-                        offset=-self.target_dictionary.nspecial,
+                        offset=-self.label_dictionary.nspecial,
                     )
                 )
         else:
@@ -198,7 +201,7 @@ class SentencePredictionTask(FairseqTask):
                 sort_order=[shuffle],
             )
 
-        print("| Loaded {0} with #samples: {1}".format(split, len(dataset)))
+        logger.info("Loaded {0} with #samples: {1}".format(split, len(dataset)))
 
         self.datasets[split] = dataset
         return self.datasets[split]
@@ -208,7 +211,7 @@ class SentencePredictionTask(FairseqTask):
         model = models.build_model(args, self)
 
         model.register_classification_head(
-            'sentence_classification_head',
+            getattr(args, 'classification_head_name', 'sentence_classification_head'),
             num_classes=self.args.num_classes,
         )
 

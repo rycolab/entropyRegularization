@@ -4,34 +4,28 @@
 # LICENSE file in the root directory of this source tree.
 
 import math
-import torch
 
-from fairseq import utils
-
-from . import FairseqCriterion, register_criterion
+from fairseq import metrics, utils
+from fairseq.criterions import FairseqCriterion, register_criterion
 
 
-def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None, reduce=True, dist=None):
+def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None, reduce=True):
     if target.dim() == lprobs.dim() - 1:
         target = target.unsqueeze(-1)
     nll_loss = -lprobs.gather(dim=-1, index=target)
-    if dist is not None:
-        uni_probs = torch.ones(lprobs.size(), device=lprobs.device) * dist
-        smooth_loss = -uni_probs.mul(lprobs).sum(dim=-1, keepdim=True)
-        # assert (smooth_loss + uni_probs.mul(torch.log(uni_probs))).sum() >= 0
-    else:
-        smooth_loss = -lprobs.sum(dim=-1, keepdim=True)
+    smooth_loss = -lprobs.sum(dim=-1, keepdim=True)
     if ignore_index is not None:
-        non_pad_mask = target.ne(ignore_index)
-        nll_loss = nll_loss[non_pad_mask]
-        smooth_loss = smooth_loss[non_pad_mask]
+        pad_mask = target.eq(ignore_index)
+        if pad_mask.any():
+            nll_loss.masked_fill_(pad_mask, 0.)
+            smooth_loss.masked_fill_(pad_mask, 0.)
     else:
         nll_loss = nll_loss.squeeze(-1)
         smooth_loss = smooth_loss.squeeze(-1)
     if reduce:
         nll_loss = nll_loss.sum()
         smooth_loss = smooth_loss.sum()
-    eps_i = epsilon if dist is not None else epsilon / lprobs.size(-1) 
+    eps_i = epsilon / lprobs.size(-1)
     loss = (1. - epsilon) * nll_loss + eps_i * smooth_loss
     return loss, nll_loss
 
@@ -42,16 +36,6 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
     def __init__(self, args, task):
         super().__init__(args, task)
         self.eps = args.label_smoothing
-        tgt_dict = task.target_dictionary
-        self.use_uni_dist = False
-        if args.T >= 1:
-            self.use_uni_dist = True
-            self.unigram_dist = torch.Tensor(tgt_dict.count)
-            self.unigram_dist[tgt_dict.eos_index] = self.unigram_dist[tgt_dict.index('.')]
-            self.unigram_dist = self.unigram_dist.pow(1./args.T)
-            self.unigram_dist = self.unigram_dist/self.unigram_dist.sum()
-            if torch.cuda.is_available() and not args.cpu:
-                self.unigram_dist = self.unigram_dist.cuda()
 
     @staticmethod
     def add_args(parser):
@@ -59,8 +43,6 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         # fmt: off
         parser.add_argument('--label-smoothing', default=0., type=float, metavar='D',
                             help='epsilon for label smoothing, 0 means no label smoothing')
-        parser.add_argument('--T', default=0, type=float, metavar='N',
-                            help='unigram distribution annealing factor')
         # fmt: on
 
     def forward(self, model, sample, reduce=True):
@@ -72,12 +54,11 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         3) logging outputs to display while training
         """
         net_output = model(**sample['net_input'])
-        loss, nll_loss, entropy = self.compute_loss(model, net_output, sample, reduce=reduce)
+        loss, nll_loss = self.compute_loss(model, net_output, sample, reduce=reduce)
         sample_size = sample['target'].size(0) if self.args.sentence_avg else sample['ntokens']
         logging_output = {
             'loss': utils.item(loss.data) if reduce else loss.data,
             'nll_loss': utils.item(nll_loss.data) if reduce else nll_loss.data,
-            'entropy': utils.item(entropy.data) if reduce else entropy.data,
             'ntokens': sample['ntokens'],
             'nsentences': sample['target'].size(0),
             'sample_size': sample_size,
@@ -87,26 +68,29 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
     def compute_loss(self, model, net_output, sample, reduce=True):
         lprobs = model.get_normalized_probs(net_output, log_probs=True)
         lprobs = lprobs.view(-1, lprobs.size(-1))
-        entropy = - (lprobs * torch.exp(lprobs)).sum(dim=-1)
-        if reduce:
-            entropy = entropy.sum()
         target = model.get_targets(sample, net_output).view(-1, 1)
         loss, nll_loss = label_smoothed_nll_loss(
             lprobs, target, self.eps, ignore_index=self.padding_idx, reduce=reduce,
-        dist=self.unigram_dist if self.use_uni_dist else None)
-        return loss, nll_loss, entropy
+        )
+        return loss, nll_loss
 
     @staticmethod
-    def aggregate_logging_outputs(logging_outputs):
+    def reduce_metrics(logging_outputs) -> None:
         """Aggregate logging outputs from data parallel training."""
+        loss_sum = sum(log.get('loss', 0) for log in logging_outputs)
+        nll_loss_sum = sum(log.get('nll_loss', 0) for log in logging_outputs)
         ntokens = sum(log.get('ntokens', 0) for log in logging_outputs)
-        nsentences = sum(log.get('nsentences', 0) for log in logging_outputs)
         sample_size = sum(log.get('sample_size', 0) for log in logging_outputs)
-        return {
-            'loss': sum(log.get('loss', 0) for log in logging_outputs) / sample_size / math.log(2) if sample_size > 0 else 0.,
-            'nll_loss': sum(log.get('nll_loss', 0) for log in logging_outputs) / ntokens / math.log(2) if ntokens > 0 else 0.,
-            'entropy': sum(log.get('entropy', 0) for log in logging_outputs) / ntokens if ntokens > 0 else 0.,
-            'ntokens': ntokens,
-            'nsentences': nsentences,
-            'sample_size': sample_size,
-        }
+
+        metrics.log_scalar('loss', loss_sum / sample_size / math.log(2), sample_size, round=3)
+        metrics.log_scalar('nll_loss', nll_loss_sum / ntokens / math.log(2), ntokens, round=3)
+        metrics.log_derived('ppl', lambda meters: round(2**meters['nll_loss'].avg, 3))
+
+    @staticmethod
+    def logging_outputs_can_be_summed() -> bool:
+        """
+        Whether the logging outputs returned by `forward` can be summed
+        across workers prior to calling `reduce_metrics`. Setting this
+        to True will improves distributed training speed.
+        """
+        return True

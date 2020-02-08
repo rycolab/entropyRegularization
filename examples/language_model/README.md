@@ -26,10 +26,18 @@ torch.hub.list('pytorch/fairseq')  # [..., 'transformer_lm.wmt19.en', ...]
 
 # Load an English LM trained on WMT'19 News Crawl data
 en_lm = torch.hub.load('pytorch/fairseq', 'transformer_lm.wmt19.en', tokenizer='moses', bpe='fastbpe')
+en_lm.eval()  # disable dropout
+
+# Move model to GPU
+en_lm.cuda()
 
 # Sample from the language model
 en_lm.sample('Barack Obama', beam=1, sampling=True, sampling_topk=10, temperature=0.8)
 # "Barack Obama is coming to Sydney and New Zealand (...)"
+
+# Compute perplexity for a sequence
+en_lm.score('Barack Obama is coming to Sydney and New Zealand')['positional_scores'].mean().neg().exp()
+# tensor(15.1474)
 
 # The same interface can be used with custom models as well
 from fairseq.models.transformer_lm import TransformerLanguageModel
@@ -63,30 +71,52 @@ fairseq-preprocess \
 
 ### 2) Train a language model
 
-Next we'll train a transformer language model using [adaptive inputs](transformer_lm/README.md):
-```bash
-fairseq-train --task language_modeling \
-    data-bin/wikitext-103 \
-    --save-dir checkpoints/transformer_wikitext-103 \
-    --arch transformer_lm_wiki103 \
-    --max-update 286000 --max-lr 1.0 --t-mult 2 --lr-period-updates 270000 --lr-scheduler cosine --lr-shrink 0.75 \
-    --warmup-updates 16000 --warmup-init-lr 1e-07 --min-lr 1e-09 --optimizer nag --lr 0.0001 --clip-norm 0.1 \
-    --criterion adaptive_loss --max-tokens 3072 --update-freq 3 --tokens-per-sample 3072 --seed 1 \
-    --sample-break-mode none --skip-invalid-size-inputs-valid-test --ddp-backend=no_c10d
+Next we'll train a basic transformer language model on wikitext-103. For more
+advanced examples (e.g., using [adaptive inputs](https://arxiv.org/abs/1809.10853)),
+please see the [Transformer LM README](transformer_lm/README.md).
+
+To train a basic LM (assumes 2 GPUs):
+```
+$ fairseq-train --task language_modeling \
+  data-bin/wikitext-103 \
+  --save-dir checkpoints/transformer_wikitext-103 \
+  --arch transformer_lm --share-decoder-input-output-embed \
+  --dropout 0.1 \
+  --optimizer adam --adam-betas '(0.9, 0.98)' --weight-decay 0.01 --clip-norm 0.0 \
+  --lr 0.0005 --lr-scheduler inverse_sqrt --warmup-updates 4000 --warmup-init-lr 1e-07 \
+  --tokens-per-sample 512 --sample-break-mode none \
+  --max-tokens 2048 --update-freq 16 \
+  --fp16 \
+  --max-update 50000
 ```
 
-If the above command runs out of memory, try reducing `--max-tokens` (max number
-of tokens per batch) or `--tokens-per-sample` (max sequence length). You can
-also increase `--update-freq` to accumulate gradients and simulate training on
-more GPUs.
+If you run out of memory, try reducing `--max-tokens` (max number of tokens per
+batch) or `--tokens-per-sample` (max sequence length). You can also adjust
+`--update-freq` to accumulate gradients and simulate training on a different
+number of GPUs.
 
 ### 3) Evaluate
+
 ```bash
 fairseq-eval-lm data-bin/wikitext-103 \
     --path checkpoints/transformer_wiki103/checkpoint_best.pt \
-    --sample-break-mode complete --max-tokens 3072 \
-    --context-window 2560 --softmax-batch 1024
+    --max-sentences 2 \
+    --tokens-per-sample 512 \
+    --context-window 400
+# | Evaluated 245569 tokens in 56.1s (4379.02 tokens/s)
+# | Loss: 3.4164, Perplexity: 30.46
 ```
+
+*Note:* The `--context-window` option controls how much context is provided to
+each token when computing perplexity. When the window size is 0, the dataset is
+chunked into segments of length 512 and perplexity is computed over each segment
+normally. However, this results in worse (higher) perplexity since tokens that
+appear earlier in each segment have less conditioning. When the maximum window
+size is used (511 in this case), then we compute perplexity for each token
+fully conditioned on 511 tokens of context. This slows down evaluation
+significantly, since we must run a separate forward pass for every token in the
+dataset, but results in better (lower) perplexity.
+
 
 ## Convolutional language models
 

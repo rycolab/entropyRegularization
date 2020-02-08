@@ -1,4 +1,14 @@
-# <img src="fairseq_logo.png" width="30"> Introduction
+<p align="center">
+  <img src="fairseq_logo.png" width="150">
+  <br />
+  <br />
+  <a href="https://github.com/pytorch/fairseq/blob/master/LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-blue.svg" /></a>
+  <a href="https://github.com/pytorch/fairseq/releases"><img alt="Latest Release" src="https://img.shields.io/github/release/pytorch/fairseq.svg" /></a>
+  <a href="https://github.com/pytorch/fairseq/actions?query=workflow:build"><img alt="Build Status" src="https://github.com/pytorch/fairseq/workflows/build/badge.svg" /></a>
+  <a href="https://fairseq.readthedocs.io/en/latest/?badge=latest"><img alt="Documentation Status" src="https://readthedocs.org/projects/fairseq/badge/?version=latest" /></a>
+</p>
+
+--------------------------------------------------------------------------------
 
 Fairseq(-py) is a sequence modeling toolkit that allows researchers and
 developers to train custom models for translation, summarization, language
@@ -6,6 +16,7 @@ modeling and other text generation tasks.
 
 ### What's New:
 
+- November 2019: [VizSeq released (a visual analysis toolkit for evaluating fairseq models)](https://facebookresearch.github.io/vizseq/docs/getting_started/fairseq_example)
 - November 2019: [CamemBERT model and code released](examples/camembert/README.md)
 - November 2019: [BART model and code released](examples/bart/README.md)
 - November 2019: [XLM-R models and code released](examples/xlmr/README.md)
@@ -55,17 +66,24 @@ Fairseq provides reference implementations of various sequence-to-sequence model
 - mixed precision training (trains faster with less GPU memory on [NVIDIA tensor cores](https://developer.nvidia.com/tensor-cores))
 - extensible: easily register new models, criterions, tasks, optimizers and learning rate schedulers
 
-We also provide [pre-trained models](#pre-trained-models-and-examples) for several benchmark
-translation and language modeling datasets.
+We also provide [pre-trained models for translation and language modeling](#pre-trained-models-and-examples)
+with a convenient `torch.hub` interface:
+```python
+en2de = torch.hub.load('pytorch/fairseq', 'transformer.wmt19.en-de.single_model')
+en2de.translate('Hello world', beam=5)
+# 'Hallo Welt'
+```
+See the PyTorch Hub tutorials for [translation](https://pytorch.org/hub/pytorch_fairseq_translation/)
+and [RoBERTa](https://pytorch.org/hub/pytorch_fairseq_roberta/) for more examples.
 
 ![Model](fairseq.gif)
 
 # Requirements and Installation
 
 * [PyTorch](http://pytorch.org/) version >= 1.2.0
-* Python version >= 3.5
+* Python version >= 3.6
 * For training new models, you'll also need an NVIDIA GPU and [NCCL](https://github.com/NVIDIA/nccl)
-* **For faster training** install NVIDIA's [apex](https://github.com/NVIDIA/apex) library with the `--cuda_ext` option
+* **For faster training** install NVIDIA's [apex](https://github.com/NVIDIA/apex) library with the `--cuda_ext` and `--deprecated_fused_adam` options
 
 To install fairseq:
 ```bash

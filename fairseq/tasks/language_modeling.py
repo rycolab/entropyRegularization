@@ -3,20 +3,32 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+import logging
 import os
 
+import numpy as np
 import torch
 
 from fairseq import utils
 from fairseq.data import (
     data_utils,
     Dictionary,
+    IdDataset,
     MonolingualDataset,
+    NestedDictionaryDataset,
+    NumelDataset,
+    PadDataset,
+    PrependTokenDataset,
+    StripTokenDataset,
     TokenBlockDataset,
     TransformEosDataset,
+    TruncateDataset,
     TruncatedDictionary,
 )
 from fairseq.tasks import FairseqTask, register_task
+
+
+logger = logging.getLogger(__name__)
 
 
 @register_task("language_modeling")
@@ -63,10 +75,6 @@ class LanguageModelingTask(FairseqTask):
                                  'If set to "eos", includes only one sentence per sample.')
         parser.add_argument('--tokens-per-sample', default=1024, type=int,
                             help='max number of tokens per sample for LM dataset')
-        parser.add_argument('--lazy-load', action='store_true',
-                            help='load the dataset lazily')
-        parser.add_argument('--raw-text', default=False, action='store_true',
-                            help='load raw text dataset')
         parser.add_argument('--output-dictionary-size', default=-1, type=int,
                             help='limit the size of output dictionary')
         parser.add_argument('--self-target', action='store_true',
@@ -79,6 +87,8 @@ class LanguageModelingTask(FairseqTask):
                             help='prepend beginning of sentence token (<s>)')
         parser.add_argument('--max-target-positions', type=int, metavar='N',
                             help='max number of tokens in the target sequence')
+        parser.add_argument('--truncate-sequence', action='store_true', default=False,
+                            help='truncate sequences to --tokens-per-sample')
         # fmt: on
 
     def __init__(self, args, dictionary, output_dictionary=None, targets=None):
@@ -97,24 +107,13 @@ class LanguageModelingTask(FairseqTask):
         Args:
             args (argparse.Namespace): parsed command-line arguments
         """
-        if getattr(args, "raw_text", False):
-            utils.deprecation_warning(
-                "--raw-text is deprecated, please use --dataset-impl=raw"
-            )
-            args.dataset_impl = "raw"
-        elif getattr(args, "lazy_load", False):
-            utils.deprecation_warning(
-                "--lazy-load is deprecated, please use --dataset-impl=lazy"
-            )
-            args.dataset_impl = "lazy"
-
         dictionary = None
         output_dictionary = None
         if args.data:
-            paths = args.data.split(":")
+            paths = args.data.split(os.pathsep)
             assert len(paths) > 0
             dictionary = Dictionary.load(os.path.join(paths[0], "dict.txt"))
-            print("| dictionary: {} types".format(len(dictionary)))
+            logger.info("dictionary: {} types".format(len(dictionary)))
             output_dictionary = dictionary
             if args.output_dictionary_size >= 0:
                 output_dictionary = TruncatedDictionary(
@@ -155,7 +154,7 @@ class LanguageModelingTask(FairseqTask):
         Args:
             split (str): name of the split (e.g., train, valid, test)
         """
-        paths = self.args.data.split(":")
+        paths = self.args.data.split(os.pathsep)
         assert len(paths) > 0
 
         data_path = paths[epoch % len(paths)]
@@ -168,6 +167,9 @@ class LanguageModelingTask(FairseqTask):
             raise FileNotFoundError(
                 "Dataset not found: {} ({})".format(split, split_path)
             )
+
+        if self.args.truncate_sequence:
+            dataset = TruncateDataset(dataset, self.args.tokens_per_sample)
 
         dataset = TokenBlockDataset(
             dataset,
@@ -195,38 +197,62 @@ class LanguageModelingTask(FairseqTask):
             add_bos_token=self.args.add_bos_token,
         )
 
-    def build_dataset_for_inference(self, src_tokens, src_lengths):
-        return TransformEosDataset(
-            MonolingualDataset(
-                TokenBlockDataset(
-                    src_tokens,
-                    src_lengths,
-                    block_size=None,
-                    pad=self.source_dictionary.pad(),
-                    eos=self.source_dictionary.eos(),
-                    break_mode="eos",
-                    include_targets=False,
-                ),
-                src_lengths,
-                self.source_dictionary,
-                self.target_dictionary,
-                add_eos_for_other_targets=False,
-                shuffle=False,
-                add_bos_token=self.args.add_bos_token,
-            ),
+    def build_dataset_for_inference(self, src_tokens, src_lengths, **kwargs):
+        """
+        Generate batches for inference. We prepend an eos token to src_tokens
+        (or bos if `--add-bos-token` is set) and we append an eos to target.
+        This is convenient both for generation with a prefix and LM scoring.
+        """
+        tgt_dataset = TokenBlockDataset(
+            src_tokens,
+            src_lengths,
+            block_size=None,  # ignored for "eos" break mode
+            pad=self.source_dictionary.pad(),
             eos=self.source_dictionary.eos(),
-            # remove EOS since this will be used as a prefix for generation
-            remove_eos_from_src=True,
-            has_target=False,
+            break_mode="eos",
+        )
+        src_dataset = PrependTokenDataset(
+            StripTokenDataset(
+                tgt_dataset,
+                # remove eos from (end of) target sequence
+                self.source_dictionary.eos(),
+            ),
+            token=(
+                self.source_dictionary.bos()
+                if getattr(self.args, "add_bos_token", False)
+                else self.source_dictionary.eos()
+            ),
+        )
+        return NestedDictionaryDataset(
+            {
+                "id": IdDataset(),
+                "net_input": {
+                    "src_tokens": PadDataset(src_dataset, pad_idx=self.source_dictionary.pad(), left_pad=False),
+                    "src_lengths": NumelDataset(src_dataset, reduce=False),
+                },
+                "target": PadDataset(tgt_dataset, pad_idx=self.source_dictionary.pad(), left_pad=False),
+            },
+            sizes=[np.array(src_lengths)],
         )
 
     def inference_step(self, generator, models, sample, prefix_tokens=None):
         with torch.no_grad():
+            # Generation will always be conditioned on bos_token
+            if getattr(self.args, "add_bos_token", False):
+                bos_token = self.source_dictionary.bos()
+            else:
+                bos_token = self.source_dictionary.eos()
+
+            # SequenceGenerator doesn't use src_tokens directly, we need to
+            # pass the `prefix_tokens` argument instead
             if prefix_tokens is None and sample["net_input"]["src_tokens"].nelement():
                 prefix_tokens = sample["net_input"]["src_tokens"]
-                if prefix_tokens[:, 0].eq(self.source_dictionary.eos()).all():
+                if prefix_tokens[:, 0].eq(bos_token).all():
                     prefix_tokens = prefix_tokens[:, 1:]
-            return generator.generate(models, sample, prefix_tokens=prefix_tokens)
+
+            return generator.generate(
+                models, sample, prefix_tokens=prefix_tokens, bos_token=bos_token,
+            )
 
     @property
     def source_dictionary(self):

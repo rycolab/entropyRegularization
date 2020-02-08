@@ -1,6 +1,8 @@
 # Fine-tuning BART on CNN-Dailymail summarization task
 
-### 1) Follow instructions [here](https://github.com/abisee/cnn-dailymail) to download and process into data-files with non-tokenized cased samples.
+### 1) Download the CNN and Daily Mail data and preprocess it into data files with non-tokenized cased samples.
+
+Follow the instructions [here](https://github.com/abisee/cnn-dailymail) to download the original CNN and Daily Mail datasets. To preprocess the data, refer to the pointers in [this issue](https://github.com/pytorch/fairseq/issues/1391) or check out the code [here](https://github.com/artmatsak/cnn-dailymail).
 
 ### 2) BPE preprocess:
 ```bash
@@ -51,6 +53,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python train.py cnn_dm-bin \
     --max-tokens $MAX_TOKENS \
     --task translation \
     --source-lang source --target-lang target \
+    --truncate-source \
     --layernorm-embedding \
     --share-all-embeddings \
     --share-decoder-input-output-embed \
@@ -64,7 +67,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python train.py cnn_dm-bin \
     --clip-norm 0.1 \
     --lr-scheduler polynomial_decay --lr $LR --total-num-update $TOTAL_NUM_UPDATES --warmup-updates $WARMUP_UPDATES \
     --fp16 --update-freq $UPDATE_FREQ \
-    --skip-invalid-size-inputs-valid-test\
+    --skip-invalid-size-inputs-valid-test \
     --find-unused-parameters;
 ```
 Above is expected to run on `1` node with `8 32gb-V100`.
@@ -74,6 +77,7 @@ Expected training time is about `5 hours`. Training time can be reduced with dis
 After training the model as mentioned in previous step, you can perform inference with checkpoints in `checkpoints/` directory using following python code snippet:
 
 ```python
+import torch
 from fairseq.models.bart import BARTModel
 
 bart = BARTModel.from_pretrained(
