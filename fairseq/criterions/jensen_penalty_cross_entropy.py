@@ -24,7 +24,7 @@ def smoothed_nll_loss(lprobs, probs, target, alpha, beta, dist, ignore_index=Non
     dist_c = gen_function(comb, None)
     divergence = 1./((1.-alpha)*alpha)*(-dist_c + alpha * dist_p) # not including + (1-alpha) * dist_u since its constant
     #computationally efficient way of checking divergence property
-    assert divergence.sum() >= 0 or divergence.sum() + 1./alpha * gen_function(uni_probs, None).sum() >= 0:
+    assert divergence.sum() >= 0 or divergence.sum() + 1./alpha * gen_function(uni_probs, None).sum() >= 0
         
     if ignore_index is not None:
         non_pad_mask = target.ne(ignore_index)
