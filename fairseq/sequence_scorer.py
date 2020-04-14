@@ -50,6 +50,7 @@ class SequenceScorer(object):
 
         # compute scores for each model in the ensemble
         avg_probs = None
+        avg_positions = None
         avg_attn = None
         for model in models:
             model.eval()
@@ -60,22 +61,30 @@ class SequenceScorer(object):
 
             batched = batch_for_softmax(decoder_out, orig_target)
             probs, idx = None, 0
+            positions = None
             for bd, tgt, is_single in batched:
                 sample['target'] = tgt
                 curr_prob = model.get_normalized_probs(bd, log_probs=len(models) == 1, sample=sample).data
+                indexes = curr_prob.argsort(-1, descending=True)
+                curr_ranks = indexes.argsort(-1)
                 if is_single:
                     probs = gather_target_probs(curr_prob, orig_target)
+                    ranks = gather_target_probs(curr_ranks, orig_target)
                 else:
                     if probs is None:
                         probs = curr_prob.new(orig_target.numel())
+                        positions = curr_prob.new(orig_target.numel())
                     step = curr_prob.size(0) * curr_prob.size(1)
                     end = step + idx
                     tgt_probs = gather_target_probs(curr_prob.view(tgt.shape + (curr_prob.size(-1),)), tgt)
+                    ranks = gather_target_probs(curr_ranks.view(tgt.shape + (curr_ranks.size(-1),)), tgt)
                     probs[idx:end] = tgt_probs.view(-1)
+                    positions[idx:end] = ranks.view(-1)
                     idx = end
                 sample['target'] = orig_target
 
             probs = probs.view(sample['target'].shape)
+            ranks = ranks.view(sample['target'].shape)
 
             if avg_probs is None:
                 avg_probs = probs
@@ -102,6 +111,7 @@ class SequenceScorer(object):
                 if sample['target'] is not None else None
             tgt_len = ref.numel()
             avg_probs_i = avg_probs[i][start_idxs[i]:start_idxs[i] + tgt_len]
+            ranks_i = ranks[i][start_idxs[i]:start_idxs[i] + tgt_len]
             score_i = avg_probs_i.sum() / tgt_len
             if avg_attn is not None:
                 avg_attn_i = avg_attn[i]
@@ -123,5 +133,6 @@ class SequenceScorer(object):
                 'attention': avg_attn_i,
                 'alignment': alignment,
                 'positional_scores': avg_probs_i,
+                'avg_ranks': ranks_i.sum().float() / tgt_len
             }])
         return hypos

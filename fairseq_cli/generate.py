@@ -103,6 +103,7 @@ def _main(args, output_file):
 
     # Initialize generator
     gen_timer = StopwatchMeter()
+    from fairseq.sequence_scorer import SequenceScorer
     generator = task.build_generator(args)
 
     # Generate and compute BLEU score
@@ -199,6 +200,8 @@ def _main(args, output_file):
                                 )
                                 print('E-{}_{}\t{}'.format(sample_id, step, h_str), file=output_file)
 
+                        if getattr(args, 'score_reference', False):
+                            print('R-{}\t{}'.format(sample_id, '{:.4f}'.format(hypo['avg_ranks'])), file=output_file)
                     # Score only the top hypothesis
                     if has_target and j == 0:
                         if align_dict is not None or args.remove_bpe is not None:
@@ -208,7 +211,6 @@ def _main(args, output_file):
                             scorer.add_string(target_str, hypo_str)
                         else:
                             scorer.add(target_tokens, hypo_tokens)
-
             wps_meter.update(num_generated_tokens)
             t.log({'wps': round(wps_meter.avg)})
             num_sentences += sample['nsentences']
