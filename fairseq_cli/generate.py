@@ -15,7 +15,7 @@ import sys
 import torch
 
 from fairseq import bleu, checkpoint_utils, options, progress_bar, tasks, utils
-from fairseq.meters import StopwatchMeter, TimeMeter
+from fairseq.meters import StopwatchMeter, TimeMeter, AverageMeter
 
 
 def main(args):
@@ -113,8 +113,10 @@ def _main(args, output_file):
         scorer = bleu.Scorer(tgt_dict.pad(), tgt_dict.eos(), tgt_dict.unk())
     num_sentences = 0
     has_target = True
+    avg_ranks = AverageMeter()
     with progress_bar.build_progress_bar(args, itr) as t:
         wps_meter = TimeMeter()
+        all_ents = []
         for sample in t:
             sample = utils.move_to_cuda(sample) if use_cuda else sample
             if 'net_input' not in sample:
@@ -126,6 +128,8 @@ def _main(args, output_file):
 
             gen_timer.start()
             hypos = task.inference_step(generator, models, sample, prefix_tokens)
+            if 'ents' in sample:
+                all_ents.extend(sample['ents'])
             num_generated_tokens = sum(len(h[0]['tokens']) for h in hypos)
             gen_timer.stop(num_generated_tokens)
 
@@ -202,7 +206,10 @@ def _main(args, output_file):
 
                         if getattr(args, 'score_reference', False):
                             print('R-{}\t{}'.format(sample_id, '{:.4f}'.format(hypo['avg_ranks'])), file=output_file)
+
                     # Score only the top hypothesis
+                    if getattr(args, 'score_reference', False):
+                        avg_ranks.update(hypo['avg_ranks'])
                     if has_target and j == 0:
                         if align_dict is not None or args.remove_bpe is not None:
                             # Convert back to tokens for evaluation with unk replacement and/or without BPE
@@ -220,6 +227,8 @@ def _main(args, output_file):
         num_sentences, gen_timer.n, gen_timer.sum, num_sentences / gen_timer.sum, 1. / gen_timer.avg))
     if has_target:
         logger.info('Generate {} with beam={}: {}'.format(args.gen_subset, args.beam, scorer.result_string()))
+    if getattr(args, 'score_reference', False):
+        logger.info('Average rank of reference={:.4f}, Entropy={:.4f}'.format(avg_ranks.avg, torch.cat(all_ents, dim=0).mean()))
 
     return scorer
 

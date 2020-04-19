@@ -52,6 +52,8 @@ class SequenceScorer(object):
         avg_probs = None
         avg_positions = None
         avg_attn = None
+        sample['ents'] = []
+
         for model in models:
             model.eval()
             decoder_out = model(**net_input)
@@ -64,7 +66,11 @@ class SequenceScorer(object):
             positions = None
             for bd, tgt, is_single in batched:
                 sample['target'] = tgt
-                curr_prob = model.get_normalized_probs(bd, log_probs=len(models) == 1, sample=sample).data
+                curr_prob = model.get_normalized_probs(bd, log_probs=len(models) == 1, sample=sample)
+                probs = model.get_normalized_probs(bd, log_probs=False, sample=sample)
+                ent = -(curr_prob*probs).sum(-1)
+                sample['ents'].append(ent.view(-1))
+                curr_prob = curr_prob.data
                 indexes = curr_prob.argsort(-1, descending=True)
                 curr_ranks = indexes.argsort(-1)
                 if is_single:

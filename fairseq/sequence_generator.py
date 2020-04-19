@@ -261,6 +261,7 @@ class SequenceGenerator(object):
 
         reorder_state = None
         batch_idxs = None
+        all_ents = []
         for step in range(max_len + 1):  # one extra step for EOS marker
             # reorder decoder internal states based on the prev choice of beams
             if reorder_state is not None:
@@ -271,9 +272,12 @@ class SequenceGenerator(object):
                 model.reorder_incremental_state(reorder_state)
                 encoder_outs = model.reorder_encoder_out(encoder_outs, reorder_state)
 
-            lprobs, avg_attn_scores = model.forward_decoder(
-                tokens[:, :step + 1], encoder_outs, temperature=self.temperature,
+            lprobs, avg_attn_scores, probs = model.forward_decoder(
+                tokens[:, :step + 1], encoder_outs, 
+                temperature=self.temperature, return_probs=True
             )
+            ents = -(lprobs*probs).sum(-1)
+            all_ents.append(ents)
             lprobs[lprobs != lprobs] = -math.inf
 
             lprobs[:, self.pad] = -math.inf  # never select pad
@@ -495,7 +499,7 @@ class SequenceGenerator(object):
 
             # reorder incremental state in decoder
             reorder_state = active_bbsz_idx
-
+        sample['ents'] = all_ents
         # sort by score descending
         for sent in range(len(finalized)):
             finalized[sent] = sorted(finalized[sent], key=lambda r: r['score'], reverse=True)
@@ -525,7 +529,7 @@ class EnsembleModel(torch.nn.Module):
         return [model.encoder(**encoder_input) for model in self.models]
 
     @torch.no_grad()
-    def forward_decoder(self, tokens, encoder_outs, temperature=1.):
+    def forward_decoder(self, tokens, encoder_outs, temperature=1., return_probs=False):
         if len(self.models) == 1:
             return self._decode_one(
                 tokens,
@@ -534,6 +538,7 @@ class EnsembleModel(torch.nn.Module):
                 self.incremental_states,
                 log_probs=True,
                 temperature=temperature,
+                return_probs=return_probs
             )
 
         log_probs = []
@@ -560,7 +565,7 @@ class EnsembleModel(torch.nn.Module):
 
     def _decode_one(
         self, tokens, model, encoder_out, incremental_states, log_probs,
-        temperature=1.,
+        temperature=1., return_probs=False
     ):
         if self.incremental_states is not None:
             decoder_out = list(model.forward_decoder(
@@ -578,9 +583,13 @@ class EnsembleModel(torch.nn.Module):
             attn = attn[0]
         if attn is not None:
             attn = attn[:, -1, :]
-        probs = model.get_normalized_probs(decoder_out, log_probs=log_probs)
-        probs = probs[:, -1, :]
-        return probs, attn
+        lprobs = model.get_normalized_probs(decoder_out, log_probs=log_probs)  
+        lprobs = lprobs[:, -1, :]
+        if return_probs:
+            probs = model.get_normalized_probs(decoder_out, log_probs=False)
+            probs = probs[:, -1, :]
+            return lprobs, attn, probs
+        return lprobs, attn
 
     def reorder_encoder_out(self, encoder_outs, new_order):
         if not self.has_encoder():
