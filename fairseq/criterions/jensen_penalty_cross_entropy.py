@@ -1,7 +1,7 @@
 import math
 import torch
 
-from fairseq import utils
+from fairseq import utils, metrics
 
 from . import FairseqCriterion, register_criterion
 import torch.distributions as d
@@ -22,10 +22,8 @@ def smoothed_nll_loss(lprobs, probs, target, alpha, beta, dist, ignore_index=Non
     
     comb = probs * alpha + uni_probs * (1. - alpha)
     dist_c = gen_function(comb, None)
-    divergence = 1./((1.-alpha)*alpha)*(-dist_c + alpha * dist_p) # not including + (1-alpha) * dist_u since its constant
-    #computationally efficient way of checking divergence property
-    assert divergence.sum() >= 0 or divergence.sum() + 1./alpha * gen_function(uni_probs, None).sum() >= 0
-        
+    divergence = 1./((1.-alpha)*alpha)*(-dist_c + alpha * dist_p) 
+
     if ignore_index is not None:
         non_pad_mask = target.ne(ignore_index)
         nll_loss = nll_loss[non_pad_mask]
@@ -50,7 +48,7 @@ class JensonCrossEntropyCriterion(FairseqCriterion):
         self.beta = args.beta
         self.gen = args.generator_function
         tgt_dict = task.target_dictionary
-        if args.use_uniform or T < 1.:
+        if args.use_uniform or T <= 0.:
             self.dist = torch.ones(len(tgt_dict.symbols)) * 1./len(tgt_dict.symbols)
         else:
             unigram_dist = torch.Tensor(tgt_dict.count)
@@ -68,10 +66,10 @@ class JensonCrossEntropyCriterion(FairseqCriterion):
     def add_args(parser):
         """Add criterion-specific arguments to the parser."""
         # fmt: off
-        parser.add_argument('--T', default=0., type=float, metavar='N',
+        parser.add_argument('--T', default=20., type=float, metavar='N',
                             help='unigram distribution annealing factor')
         parser.add_argument('--use-uniform', action='store_true',
-                            help='use uniform dist instead')
+                            help='use uniform distribution as baseline')
         parser.add_argument('--beta', default=0., type=float, metavar='D',
                             help='weight of penalty')
         parser.add_argument('--alpha', default=0.5, type=float, metavar='D',
@@ -114,18 +112,19 @@ class JensonCrossEntropyCriterion(FairseqCriterion):
             lprobs, probs, target, self.alpha, self.beta, self.dist, ignore_index=self.padding_idx, 
             reduce=reduce, gen=self.gen)
         return loss, nll_loss, entropy
-
+    
     @staticmethod
-    def aggregate_logging_outputs(logging_outputs):
+    def reduce_metrics(logging_outputs) -> None:
         """Aggregate logging outputs from data parallel training."""
+        loss_sum = sum(log.get('loss', 0) for log in logging_outputs)
+        nll_loss_sum = sum(log.get('nll_loss', 0) for log in logging_outputs)
         ntokens = sum(log.get('ntokens', 0) for log in logging_outputs)
-        nsentences = sum(log.get('nsentences', 0) for log in logging_outputs)
         sample_size = sum(log.get('sample_size', 0) for log in logging_outputs)
-        return {
-            'loss': sum(log.get('loss', 0) for log in logging_outputs) / sample_size / math.log(2) if sample_size > 0 else 0.,
-            'nll_loss': sum(log.get('nll_loss', 0) for log in logging_outputs) / ntokens / math.log(2) if ntokens > 0 else 0.,
-            'entropy': sum(log.get('entropy', 0) for log in logging_outputs) / ntokens if ntokens > 0 else 0.,
-            'ntokens': ntokens,
-            'nsentences': nsentences,
-            'sample_size': sample_size,
-        }
+        entropy = sum(log.get('entropy', 0) for log in logging_outputs)
+
+        metrics.log_scalar('loss', loss_sum / sample_size / math.log(2), sample_size, round=3)
+        metrics.log_scalar('nll_loss', nll_loss_sum / ntokens / math.log(2), ntokens, round=3)
+        metrics.log_scalar('entropy', entropy / ntokens / math.log(2), ntokens, round=3)
+        metrics.log_derived('ppl', lambda meters: round(2**meters['nll_loss'].avg, 3))
+
+    
