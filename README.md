@@ -56,7 +56,7 @@ pip install --editable .
 
 # Citation
 
-This code is for the paper _Generalized Entropy Regularization: or Is Label Smoothing All That?_ featured in ACL 2020. Please cite as:
+This code is for the paper _Generalized Entropy Regularization: or There’s Nothing Special about Label Smoothing_ featured in ACL 2020. Please cite as:
 
 ```bibtex
 @inproceedings{meister+al.acl20,
