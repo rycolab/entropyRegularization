@@ -2,12 +2,12 @@
 
 This library is built on top of [fairseq (pytorch)](https://github.com/pytorch/fairseq).
 
-Generalized entropy regularization can be used with any model and data set. Just set the `--criterion` flag to `jensen_cross_entropy` and specify `--alpha` and `--beta` when running `fairseq-train`. Specify `--use-uniform` to use the uniform distribution as the baseline. Otherwise, the unigram distribution with annealing parameter `--T` will be used (run `fairseq-train --help` to see all options).
+Generalized entropy regularization can be used with any probabilistic model and data set. Just set the `--criterion` flag to `jensen_cross_entropy` and specify `--alpha` and `--beta` when running `fairseq-train`. Specify `--use-uniform` to use the uniform distribution as the baseline. Otherwise, the unigram distribution with annealing parameter `--T` will be used (run `fairseq-train --help` to see all options).
 
 ## Examples
 
 ### Neural Machine Translation
-Preprocess data following examples in the [Translation ReadMe](examples/translation/README.md)]. A convolutional model can then be trained on IWSLT'14 (De-En) with the following command:
+Preprocess data following examples in the [Translation README](examples/translation/README.md). A convolutional model can then be trained on IWSLT'14 (De-En) with the following command:
 
 ```
 fairseq-train data-bin/iwslt14.tokenized.de-en \
@@ -29,11 +29,11 @@ fairseq-train data-bin/iwslt14.tokenized.de-en \
             --beta 0.7 --use-uniform
 ```
 
-Generation is the same as in the Fairseq Translation ReadMe.
+Generation is the same as in the Fairseq Translation README.
 
 ### Abstractive Summarization
 
-Download the CNN/DailyMail data set according to the [BART ReadMe](examples/bart/README.md). Follow their suggested training method, setting `--criterion` to `jensen_cross_entropy` and specifying `--alpha`,  `--beta`, and `--use-uniform` (if desired).
+Download the CNN/DailyMail data set according to the [BART README](examples/bart/README.md). Follow their suggested training method, setting `--criterion` to `jensen_cross_entropy` and specifying `--alpha`,  `--beta`, and `--use-uniform` (if desired).
 
 
 Other models can be trained using the same methodology as above. See [fairseq documentation](https://fairseq.readthedocs.io/) for more options.
@@ -47,7 +47,7 @@ Other models can be trained using the same methodology as above. See [fairseq do
 
 Installation:
 ```bash
-git clone https://github.com/rycolab/entropy_regularization
+git clone https://github.com/rycolab/entropyRegularization
 cd entropy_regularization
 pip install --editable .
 ```
@@ -75,10 +75,23 @@ Cotterell, Ryan},
 Feel free to include the fairseq citation as well; they're awesome.
 
 ```bibtex
-@inproceedings{ott2019fairseq,
-  title = {fairseq: A Fast, Extensible Toolkit for Sequence Modeling},
-  author = {Myle Ott and Sergey Edunov and Alexei Baevski and Angela Fan and Sam Gross and Nathan Ng and David Grangier and Michael Auli},
-  booktitle = {Proceedings of NAACL-HLT 2019: Demonstrations},
-  year = {2019},
+@inproceedings{ott-etal-2019-fairseq,
+    title = "fairseq: {A} Fast, Extensible Toolkit for Sequence Modeling",
+    author = "Ott, Myle  and
+      Edunov, Sergey  and
+      Baevski, Alexei  and
+      Fan, Angela  and
+      Gross, Sam  and
+      Ng, Nathan  and
+      Grangier, David  and
+      Auli, Michael",
+    booktitle = "Proceedings of the 2019 Conference of the North {A}merican Chapter of the Association for Computational Linguistics (Demonstrations)",
+    month = jun,
+    year = "2019",
+    address = "Minneapolis, Minnesota",
+    publisher = "Association for Computational Linguistics",
+    url = "https://www.aclweb.org/anthology/N19-4009",
+    doi = "10.18653/v1/N19-4009",
+    pages = "48--53",
 }
 ```
