@@ -56,11 +56,11 @@ pip install --editable .
 
 # Citation
 
-This code is for the paper _Generalized Entropy Regularization: or There’s Nothing Special about Label Smoothing_ featured in ACL 2020. Please cite as:
+This code is for the paper _Generalized Entropy Regularization or: There’s Nothing Special about Label Smoothing_ featured in ACL 2020. Please cite as:
 
 ```bibtex
 @inproceedings{meister+al.acl20,
- title = {Generalized Entropy Regularization or: There's Nothing Special about Label Smoothing},
+ title = {Generalized Entropy Regularization or: {T}here's Nothing Special about Label Smoothing},
  author = {Meister, Clara and 
 Salesky, Elizabeth and 
 Cotterell, Ryan},
